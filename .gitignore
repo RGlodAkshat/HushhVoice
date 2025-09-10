@@ -1,0 +1,13 @@
+# Secrets
+.env
+*.env
+Backend/credentials.json
+Backend/token.json
+
+# Python junk
+__pycache__/
+*.py[cod]
+
+# Virtualenvs
+.venv/
+venv/

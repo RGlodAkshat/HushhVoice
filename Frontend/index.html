@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <!--
+    HushhVoice — Clean HTML Shell (with working Google Sign-In)
+    -----------------------------------------------------------
+    ✅ What’s fixed / improved:
+      • Uses PROGRAMMATIC Google Sign-In render (most reliable in custom layouts)
+      • Hardens against the common localhost vs 127.0.0.1 origin mismatch
+      • Keeps your existing structure (sidebar, chat, settings) intact
+      • No client_secret on the frontend (never expose it)
+      • Minimal inline JS to render the button + post ID token to /api/signin
+
+    IMPORTANT (Dev):
+      • Open this site as http://localhost:5500 (NOT http://127.0.0.1:5500)
+        because Google treats them as different origins.
+      • Make sure your OAuth “Authorized JavaScript origins” includes:
+          http://localhost:5500
+  -->
+
+  <meta charset="utf-8" />
+  <title>HushhVoice — Your private, consent-first AI copilot</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark light" />
+  <meta name="description" content="HushhVoice is a consent-first personal AI that helps with email, scheduling, and visual understanding." />
+  <meta name="theme-color" content="#0b0f14" />
+
+  <link rel="icon" type="image/png" href="favicon.png" />
+  <link rel="preload" as="image" href="Images/HushhVoice_Logo.png" imagesrcset="Images/HushhVoice_Logo.png" />
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400..700&family=Sora:wght@300..800&display=swap" rel="stylesheet" />
+
+  <!-- App styles -->
+  <link rel="stylesheet" href="style.css" />
+
+  <!-- Google Identity Services (GIS) -->
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+</head>
+
+<body>
+  <noscript><div class="noscript">HushhVoice needs JavaScript to run. Please enable it and reload.</div></noscript>
+
+  <!-- Skip link -->
+  <a href="#chat" class="visually-hidden focusable">Skip to chat</a>
+
+  <!-- Ambient background -->
+  <div class="bg-anim" aria-hidden="true"></div>
+  <div class="bg-stars" aria-hidden="true">
+    <div class="stars"></div>
+    <div class="shooting-star"></div>
+    <div class="shooting-star"></div>
+    <div class="shooting-star"></div>
+  </div>
+  <img class="bg-logo" src="Images/HushhVoice_Logo.png" alt="" aria-hidden="true" />
+
+  <div class="app-layout">
+    <!-- Sidebar -->
+    <aside id="sidebar" class="sidebar" aria-hidden="true" aria-label="Profile and settings">
+      <div class="sidebar-header">
+        <img src="Images/My_Image.jpg" alt="Your profile photo" class="profile-pic" />
+        <div class="profile-info">
+          <h2 class="profile-name" id="profile-handle">Akshat</h2>
+          <p class="profile-subtitle" id="profile-subtitle">Signed-Out</p>
+        </div>
+      </div>
+
+      <nav class="sidebar-content" aria-label="Profile tools and memory">
+        <!-- CHATS: Sidebar Panel -->
+        <section id="chats-panel" class="u-card chats-card" aria-labelledby="chats-title">
+          <header class="chats-head">
+            <h2 id="chats-title" class="section-title">Chats</h2>
+
+            <button id="chat-new" class="btn primary chats-new" type="button" aria-label="Start a new chat">
+              ＋ New Chat
+            </button>
+
+            <div class="chats-search">
+              <label for="chat-search" class="visually-hidden">Search chats</label>
+              <input id="chat-search" class="field chats-search-input" type="search" placeholder="Search…" autocomplete="off" />
+            </div>
+          </header>
+
+          <div class="chats-list-wrap u-focus-within" role="region" aria-label="Chat threads">
+            <ol id="chat-threads" class="threads-list" aria-live="polite" aria-relevant="additions removals"></ol>
+
+            <div id="chats-empty" class="threads-empty" aria-live="polite">
+              No chats yet. Click <b>New Chat</b> to start one.
+            </div>
+          </div>
+        </section>
+
+        <!-- Thread item template -->
+        <template id="tpl-chat-thread">
+          <li class="thread" data-id="">
+            <button class="thread-main" type="button" aria-label="Open chat">
+              <div class="thread-top">
+                <span class="thread-title">Untitled</span>
+                <time class="thread-time" datetime="" aria-label="Last updated"></time>
+              </div>
+              <p class="thread-snippet">—</p>
+            </button>
+
+            <div class="thread-actions" role="group" aria-label="Chat actions">
+              <button class="btn action pin thread-pin" type="button" title="Pin chat" aria-label="Pin chat">
+                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false">
+                  <path d="M14 2l4 4-2 2 3 3-2 2-3-3-2 2-4-4 2-2-4-4 4 4 2-2zM5 21l6-6 2 2-6 6H5z"/>
+                </svg>
+                <span class="action-label">Pin</span>
+              </button>
+
+              <button class="btn action rename thread-rename" type="button" title="Rename chat" aria-label="Rename chat">
+                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false">
+                  <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41L18.37 3.29a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/>
+                </svg>
+                <span class="action-label">Rename</span>
+              </button>
+
+              <button class="btn action danger thread-delete" type="button" title="Delete chat" aria-label="Delete chat">
+                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false">
+                  <path d="M6 7h12l-1 14H7L6 7zm3-3h6l1 2H8l1-2z"/>
+                </svg>
+                <span class="action-label">Delete</span>
+              </button>
+            </div>
+          </li>
+        </template>
+
+        <!-- Context menu (right-click) -->
+        <template id="tpl-thread-menu">
+          <div class="thread-menu" role="menu">
+            <button class="menu-item" type="button" role="menuitem" data-action="pin">Pin/Unpin</button>
+            <button class="menu-item" type="button" role="menuitem" data-action="rename">Rename</button>
+            <hr class="menu-sep" />
+            <button class="menu-item danger" type="button" role="menuitem" data-action="delete">Delete</button>
+          </div>
+        </template>
+
+        <!-- Rename modal -->
+        <dialog id="thread-rename-modal" class="modal" aria-labelledby="thread-rename-title" aria-modal="true">
+          <form id="thread-rename-form" method="dialog">
+            <h3 id="thread-rename-title">Rename chat</h3>
+            <label for="thread-rename-input" class="visually-hidden">Chat title</label>
+            <input id="thread-rename-input" class="field" type="text" maxlength="120" placeholder="New title…" />
+            <div class="modal-actions">
+              <button class="btn btn-ghost" value="cancel" type="submit">Cancel</button>
+              <button id="thread-rename-save" class="btn primary" value="default" type="submit">Save</button>
+            </div>
+          </form>
+        </dialog>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="sidebar-footer-row">
+          <button id="open-settings" class="btn small btn-ghost" type="button"
+                  aria-label="Open Settings" aria-haspopup="dialog" aria-controls="settings-modal">
+            ⚙️ Settings
+          </button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main App -->
+    <div class="app" id="app">
+      <!-- Topbar -->
+      <header class="topbar" role="banner">
+        <button id="sidebar-toggle" class="btn icon" aria-label="Toggle sidebar" aria-controls="sidebar" aria-expanded="false" type="button">☰</button>
+
+        <a class="brand" href="#" aria-label="HushhVoice home">
+          <img src="Images/HushhVoice_Logo.png" alt="HushhVoice Logo" class="logo" width="68" height="68" decoding="async" />
+          <div class="brand-text">
+            <h1 class="app-title">HushhVoice</h1>
+            <p class="app-sub">Your private, consent-first AI copilot</p>
+          </div>
+        </a>
+
+        <!-- Google Sign-In Button mount point (programmatic render) -->
+        <div id="google-btn" style="min-width:200px; min-height:40px;"></div>
+      </header>
+
+      <!-- Chat -->
+      <main class="chat" id="chat" role="main" aria-label="Chat conversation">
+        <ol id="chat-box" class="chat-box" aria-live="polite" aria-relevant="additions text"></ol>
+      </main>
+
+      <!-- Composer -->
+      <footer class="composer" role="contentinfo">
+        <div class="composer-inner">
+          <div id="attachment-bar" class="attachment-bar" hidden aria-live="polite"></div>
+
+          <div class="input-row">
+            <div class="tooltray" role="group" aria-label="Quick actions">
+              <button id="mic-btn" class="btn icon mic" title="Hold to speak" aria-label="Voice input" type="button">🎤</button>
+              <button id="stop-btn" class="btn icon stop" title="Stop speaking" aria-label="Stop speaking" type="button">Stop</button>
+              <input id="image-input" type="file" accept="image/*" capture="environment" class="visually-hidden" />
+              <input id="image-input-gallery" type="file" accept="image/*" class="visually-hidden" />
+            </div>
+
+            <label for="user-input" class="visually-hidden">Message HushhVoice</label>
+            <textarea id="user-input" class="input" placeholder="Message HushhVoice…" rows="1" autocomplete="off" autocorrect="on" spellcheck="true" aria-multiline="true"></textarea>
+
+            <button id="send-btn" class="btn primary send" aria-label="Send message" type="button">➤</button>
+          </div>
+
+          <div class="hints">
+            <span>Press <kbd>Enter</kbd> to send • <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line • <kbd>🎤</kbd> to speak</span>
+          </div>
+        </div>
+      </footer>
+    </div>
+  </div>
+
+  <!-- Message Templates -->
+  <template id="tpl-typing">
+    <li class="msg bot typing" data-role="assistant" aria-live="polite">
+      <div class="avatar" aria-hidden="true">🤖</div>
+      <div class="bubble"><span class="dots"><i></i><i></i><i></i></span></div>
+    </li>
+  </template>
+
+  <template id="tpl-assistant">
+    <li class="msg bot" data-role="assistant">
+      <div class="avatar" aria-hidden="true">🤖</div>
+      <div class="bubble"><div class="content"></div></div>
+    </li>
+  </template>
+
+  <template id="tpl-user">
+    <li class="msg user" data-role="user">
+      <div class="avatar" aria-hidden="true">🧑</div>
+      <div class="bubble"><div class="content"></div></div>
+    </li>
+  </template>
+
+  <!-- Toasts -->
+  <div id="toasts" class="toasts" aria-live="assertive" aria-atomic="true"></div>
+
+  <!-- Mic Help -->
+  <dialog id="mic-help" class="modal" aria-labelledby="mic-help-title">
+    <form method="dialog">
+      <h3 id="mic-help-title">Enable your microphone</h3>
+      <p>Your browser blocked mic access. Click the lock icon in the address bar → allow microphone, then try again.</p>
+      <div class="modal-actions">
+        <button class="btn primary" type="submit">OK</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- SETTINGS MODAL -->
+  <dialog id="settings-modal" class="modal settings-modal" aria-labelledby="settings-title" aria-modal="true">
+    <form id="settings-form" method="dialog">
+      <header class="settings-header">
+        <div class="settings-title-wrap">
+          <div class="settings-icon" aria-hidden="true">⚙️</div>
+          <div>
+            <h3 id="settings-title" class="settings-title">Settings</h3>
+            <p class="settings-sub">Private by default. You’re always in control.</p>
+          </div>
+        </div>
+        <button class="btn btn-ghost small settings-close" value="cancel" type="submit" aria-label="Close settings">✕</button>
+      </header>
+
+      <div class="settings-panel">
+        <!-- Data Consent -->
+        <section class="pane">
+          <div class="pane-head">
+            <h4 class="section-title">Data Consent</h4>
+            <p class="section-sub">Choose which sources to allow data</p>
+          </div>
+
+          <div class="consent-grid">
+            <label class="consent-card" for="consent-mail" role="group" aria-labelledby="consent-mail-label" aria-describedby="consent-mail-desc">
+              <div class="consent-meta">
+                <div class="consent-icon" aria-hidden="true">📧</div>
+                <div>
+                  <div id="consent-mail-label" class="consent-title">Mail</div>
+                  <div id="consent-mail-desc" class="consent-desc">Gmail inbox and summaries</div>
+                </div>
+              </div>
+              <input type="checkbox" id="consent-mail" class="switch-input" />
+              <span class="switch"></span>
+            </label>
+
+            <label class="consent-card" for="consent-calendar" role="group" aria-labelledby="consent-calendar-label" aria-describedby="consent-calendar-desc">
+              <div class="consent-meta">
+                <div class="consent-icon" aria-hidden="true">🗓️</div>
+                <div>
+                  <div id="consent-calendar-label" class="consent-title">Calendar</div>
+                  <div id="consent-calendar-desc" class="consent-desc">Agenda, meetings, reminders</div>
+                </div>
+              </div>
+              <input type="checkbox" id="consent-calendar" class="switch-input" />
+              <span class="switch"></span>
+            </label>
+
+            <label class="consent-card" for="consent-health" role="group" aria-labelledby="consent-health-label" aria-describedby="consent-health-desc">
+              <div class="consent-meta">
+                <div class="consent-icon" aria-hidden="true">💓</div>
+                <div>
+                  <div id="consent-health-label" class="consent-title">Health</div>
+                  <div id="consent-health-desc" class="consent-desc">Steps, sleep, wellness trends</div>
+                </div>
+              </div>
+              <input type="checkbox" id="consent-health" class="switch-input" />
+              <span class="switch"></span>
+            </label>
+
+            <label class="consent-card" for="consent-phone" role="group" aria-labelledby="consent-phone-label" aria-describedby="consent-phone-desc">
+              <div class="consent-meta">
+                <div class="consent-icon" aria-hidden="true">📱</div>
+                <div>
+                  <div id="consent-phone-label" class="consent-title">Phone data</div>
+                  <div id="consent-phone-desc" class="consent-desc">Device usage and context</div>
+                </div>
+              </div>
+              <input type="checkbox" id="consent-phone" class="switch-input" />
+              <span class="switch"></span>
+            </label>
+
+            <label class="consent-card" for="consent-app" role="group" aria-labelledby="consent-app-label" aria-describedby="consent-app-desc">
+              <div class="consent-meta">
+                <div class="consent-icon" aria-hidden="true">📦</div>
+                <div>
+                  <div id="consent-app-label" class="consent-title">App data</div>
+                  <div id="consent-app-desc" class="consent-desc">Connected apps and integrations</div>
+                </div>
+              </div>
+              <input type="checkbox" id="consent-app" class="switch-input" />
+              <span class="switch"></span>
+            </label>
+          </div>
+        </section>
+
+        <hr class="pane-divider" />
+
+        <!-- About me (Bio) -->
+        <section class="pane">
+          <div class="pane-head">
+            <h4 class="section-title">About me</h4>
+            <p class="section-sub">A short bio helps personalize your assistant’s tone and answers.</p>
+          </div>
+          <label for="bio-text-inline" class="visually-hidden">Bio</label>
+          <textarea id="bio-text-inline" class="field" rows="4" maxlength="600" placeholder="Write a short bio… (e.g., 'Founder at Hushh. I batch email at 9pm.')"></textarea>
+          <div class="section-actions">
+            <span class="char-hint" id="bio-char-hint"><b>0</b>/600</span>
+            <button id="bio-save-inline" class="btn primary small" type="button">Save Bio</button>
+          </div>
+        </section>
+
+        <hr class="pane-divider" />
+
+        <!-- RAG Memory -->
+        <section class="pane">
+          <div class="pane-head">
+            <h4 class="section-title">RAG Memory</h4>
+            <p class="section-sub">Teach HushhVoice small facts. Short and clear works best.</p>
+          </div>
+
+          <div class="memory-form">
+            <input id="memory-inline" class="field" type="text" maxlength="600" placeholder="e.g., ‘I prefer 30-min meetings after 2pm.’" />
+            <button id="memory-add-inline" class="btn primary small" type="button">Add</button>
+          </div>
+
+          <div class="memory-log-wrap u-focus-within">
+            <ol id="memory-log-inline" class="memory-log"></ol>
+          </div>
+
+          <div class="memory-actions">
+            <button id="memory-clear-inline" class="btn small btn-ghost" type="button">Clear All</button>
+          </div>
+        </section>
+      </div>
+
+      <footer class="modal-actions settings-actions">
+        <button class="btn btn-ghost" value="cancel" type="submit">Close</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <!-- Markdown + XSS sanitizer -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+
+  <!-- Your app logic (chat, threads, etc.) -->
+  <script src="script.js" defer></script>
+
+  <!-- Minimal inline JS to render the Google Sign-In button + post ID token to backend -->
+  <script>
+    (function () {
+      // 🔐 PUBLIC client ID (safe to expose on frontend)
+      const CLIENT_ID = "106283179463-48aftf364n2th97mone9s8mocicujt6c.apps.googleusercontent.com";
+      const SIGNIN_ENDPOINT = "http://localhost:8000/api/signin";
+
+      // Define the callback if not already defined by script.js
+      if (!window.handleCredentialResponse) {
+        window.handleCredentialResponse = async function (response) {
+          try {
+            const idToken = response.credential;
+            const res = await fetch(SIGNIN_ENDPOINT, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ id_token: idToken })
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data?.detail || "Invalid ID token");
+
+            // Minimal UI update
+            const email = data.email || "";
+            document.getElementById("profile-subtitle").textContent = "Signed-In";
+            document.getElementById("profile-handle").textContent = (email.split("@")[0] || "You");
+            localStorage.setItem("user_email", email);
+          } catch (err) {
+            console.error("Google sign-in failed:", err);
+            alert("Google sign-in failed. Check console for details.");
+          }
+        };
+      }
+
+      function initGoogleButton() {
+        if (!window.google || !google.accounts || !google.accounts.id) {
+          // GIS not ready yet — try again shortly
+          return setTimeout(initGoogleButton, 200);
+        }
+
+        // Warn on the common origin mismatch (127.0.0.1 vs localhost)
+        if (location.hostname === "127.0.0.1") {
+          console.warn("⚠️ Google Sign-In requires the origin to match your OAuth config. Use http://localhost:5500 instead of 127.0.0.1.");
+        }
+
+        google.accounts.id.initialize({
+          client_id: CLIENT_ID,
+          callback: window.handleCredentialResponse,
+          ux_mode: "popup",
+          auto_select: false
+        });
+
+        const mount = document.getElementById("google-btn");
+        if (mount) {
+          google.accounts.id.renderButton(mount, {
+            theme: "outline",
+            size: "large",
+            text: "signin_with",
+            shape: "rectangular",
+            logo_alignment: "left"
+          });
+        }
+
+        // Optional: One Tap
+        // google.accounts.id.prompt();
+      }
+
+      window.addEventListener("load", initGoogleButton);
+    })();
+  </script>
+</body>
+</html>
