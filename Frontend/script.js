@@ -141,7 +141,7 @@ function showSignedIn(email) {
   if (els.googleBtnMount) {
     els.googleBtnMount.innerHTML = `
       <div class="signed-in-email">
-        ${escapeHTML(email)}
+        Signed in as ${escapeHTML(email)}
       </div>
     `;
   }
@@ -229,19 +229,23 @@ function tokenHasScope(requiredScope) {
   return granted.includes(requiredScope);
 }
 function reflectConnectedScopes() {
-  // Adds .is-connected class when that scope was granted last
+  // Adds .is-connected class and updates text when that scope was granted
   const ls = (localStorage.getItem(OAUTH.LS_SCOPE) || "").split(/\s+/);
   if (els.btnConnectMail) {
-    els.btnConnectMail.classList.toggle("is-connected", ls.includes(OAUTH.SCOPE_MAIL));
+    const connected = ls.includes(OAUTH.SCOPE_MAIL);
+    els.btnConnectMail.classList.toggle("is-connected", connected);
+    els.btnConnectMail.textContent = connected ? "\u2713 Gmail Connected" : "Connect Gmail";
   }
   if (els.btnConnectCal) {
-    els.btnConnectCal.classList.toggle("is-connected", ls.includes(OAUTH.SCOPE_CAL));
+    const connected = ls.includes(OAUTH.SCOPE_CAL);
+    els.btnConnectCal.classList.toggle("is-connected", connected);
+    els.btnConnectCal.textContent = connected ? "\u2713 Calendar Connected" : "Connect Calendar";
   }
   if (els.btnConnectBoth) {
-    els.btnConnectBoth.classList.toggle("is-connected",
-      ls.includes("https://www.googleapis.com/auth/gmail.readonly") &&
-      ls.includes("https://www.googleapis.com/auth/calendar.readonly")
-    );
+    const connected = ls.includes("https://www.googleapis.com/auth/gmail.readonly") &&
+      ls.includes("https://www.googleapis.com/auth/calendar.readonly");
+    els.btnConnectBoth.classList.toggle("is-connected", connected);
+    els.btnConnectBoth.textContent = connected ? "\u2713 All Connected" : "Connect Google";
   }
 }
 
@@ -469,7 +473,12 @@ async function sendQuery(raw) {
     hideTyping(); addAssistantMessage(text);
   } catch (err) {
     hideTyping();
-    addAssistantMessage(`⚠️ Couldn’t reach server: ${escapeHTML(err.message || err)}`);
+    const msg = err?.message || String(err);
+    if (msg.includes("Missing Gmail access token")) {
+      addAssistantMessage("🔐 To check your inbox, please click 'Connect Google' and grant Gmail access.");
+    } else {
+      addAssistantMessage(`⚠️ Couldn’t reach server: ${escapeHTML(msg)}`);
+    }
   }
 }
 
