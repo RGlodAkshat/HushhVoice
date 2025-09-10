@@ -907,29 +907,13 @@ dialog[open] {
   }
   
   /* Buttons inherit .btn styles; we add light brand accents per tool */
-  #btn-connect-mail{
-    /* Gmail-ish tint */
-    background: linear-gradient(180deg, #ef5350, #c62828);
-    border-color: #f06a67;
-    box-shadow: 0 10px 28px rgba(239,83,80,.18);
-  }
-  #btn-connect-mail:hover{ filter: brightness(1.06); }
-  
-  #btn-connect-calendar{
-    /* Calendar-ish tint (uses success hue) */
-    background: linear-gradient(180deg, #22c55e, #199a49);
-    border-color: #42d37a;
-    box-shadow: 0 10px 28px rgba(34,197,94,.18);
-  }
-  #btn-connect-calendar:hover{ filter: brightness(1.06); }
-  
-  #btn-connect-both{
+  #btn-connect-google{
     /* Neutral dark button that matches your UI */
     background: linear-gradient(180deg,#0b1320,#0a121e);
     border:1px solid var(--border-2);
     color: var(--text);
   }
-  #btn-connect-both:hover{ background:#0e1626; border-color: var(--border-3); }
+  #btn-connect-google:hover{ background:#0e1626; border-color: var(--border-3); }
   
   /* Compact buttons sit well in the topbar */
   .auth-actions .btn.small{
