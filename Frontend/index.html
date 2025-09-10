@@ -154,7 +154,7 @@
 
       <div class="sidebar-footer">
         <div class="sidebar-footer-row">
-          <button id="btn-connect-mail" class="btn small" type="button">Connect Gmail</button>
+          <button id="btn-connect-google" class="btn small" type="button">Connect Google</button>
         </div>
         <div class="sidebar-footer-row">
           <button id="open-settings" class="btn small btn-ghost" type="button"
@@ -388,74 +388,5 @@
 
   <!-- Your app logic (chat, threads, etc.) -->
   <script src="script.js" defer></script>
-
-  <!-- Minimal inline JS to render the Google Sign-In button + post ID token to backend -->
-  <script>
-    (function () {
-      // 🔐 PUBLIC client ID (safe to expose on frontend)
-      const CLIENT_ID = "106283179463-48aftf364n2th97mone9s8mocicujt6c.apps.googleusercontent.com";
-      const SIGNIN_ENDPOINT = "http://localhost:8000/api/signin";
-
-      // Define the callback if not already defined by script.js
-      if (!window.handleCredentialResponse) {
-        window.handleCredentialResponse = async function (response) {
-          try {
-            const idToken = response.credential;
-            const res = await fetch(SIGNIN_ENDPOINT, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ id_token: idToken })
-            });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data?.detail || "Invalid ID token");
-
-            // Minimal UI update
-            const email = data.email || "";
-            document.getElementById("profile-subtitle").textContent = "Signed-In";
-            document.getElementById("profile-handle").textContent = (email.split("@")[0] || "You");
-            localStorage.setItem("user_email", email);
-          } catch (err) {
-            console.error("Google sign-in failed:", err);
-            alert("Google sign-in failed. Check console for details.");
-          }
-        };
-      }
-
-      function initGoogleButton() {
-        if (!window.google || !google.accounts || !google.accounts.id) {
-          // GIS not ready yet — try again shortly
-          return setTimeout(initGoogleButton, 200);
-        }
-
-        // Warn on the common origin mismatch (127.0.0.1 vs localhost)
-        if (location.hostname === "127.0.0.1") {
-          console.warn("⚠️ Google Sign-In requires the origin to match your OAuth config. Use http://localhost:5500 instead of 127.0.0.1.");
-        }
-
-        google.accounts.id.initialize({
-          client_id: CLIENT_ID,
-          callback: window.handleCredentialResponse,
-          ux_mode: "popup",
-          auto_select: false
-        });
-
-        const mount = document.getElementById("google-btn");
-        if (mount) {
-          google.accounts.id.renderButton(mount, {
-            theme: "outline",
-            size: "large",
-            text: "signin_with",
-            shape: "rectangular",
-            logo_alignment: "left"
-          });
-        }
-
-        // Optional: One Tap
-        // google.accounts.id.prompt();
-      }
-
-      window.addEventListener("load", initGoogleButton);
-    })();
-  </script>
 </body>
 </html>

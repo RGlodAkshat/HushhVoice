@@ -125,7 +125,7 @@ def handle_general(user_text: str) -> str:
   )
   return r.output_text or "I couldn't generate a response."
 
-def handle_mail(user_text: str, gmail_access_token: str, max_results: int = 20) -> str:
+def handle_mail(user_text: str, gmail_access_token: str, max_results: int = 5) -> str:
   msgs = fetch_last_messages(gmail_access_token, max_results=max_results)
   return answer_from_mail_context(client, msgs, user_text)
 
@@ -156,8 +156,13 @@ async def echo_with_intents(
 
   if intent == "mail":
     if not x_google_access_token:
-      raise HTTPException(status_code=401, detail="Missing Gmail access token")
-    resp_text = handle_mail(user_text, x_google_access_token)
+      resp_text = "🔒 Please connect your Gmail to allow inbox access."
+    else:
+      try:
+        resp_text = handle_mail(user_text, x_google_access_token, max_results=5)
+      except Exception as e:
+        print(f"[ERROR] gmail fetch failed: {e}")
+        resp_text = "🔒 Please connect your Gmail to allow inbox access."
   elif intent == "calendar":
     resp_text = handle_calendar(user_text)
   elif intent == "health":

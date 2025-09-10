@@ -2,7 +2,7 @@
    HushhVoice — script.js (Sign-In + OAuth + Chat + Threads, Clean + Fixed)
    ---------------------------------------------------------------------------
    • Google Sign-In (ID token) → /api/signin (verify identity)
-   • OAuth buttons: Connect Mail, Connect Calendar, Connect Google Data (both)
+   • OAuth button: Connect Google (Gmail + Calendar scopes)
    • Stores access_token + scopes in localStorage
    • Sends headers: X-User-Email and X-Google-Access-Token to backend
    • Chat UI + Threads + Settings modal
@@ -60,10 +60,8 @@ const els = {
   profileHandle: document.getElementById("profile-handle"),
   googleBtnMount: document.getElementById("google-btn"),
 
-  // OAuth action buttons (you added these in HTML)
-  btnConnectMail: document.getElementById("btn-connect-mail"),
-  btnConnectCal: document.getElementById("btn-connect-calendar"),
-  btnConnectBoth: document.getElementById("btn-connect-both"),
+  // OAuth action button
+  btnConnectGoogle: document.getElementById("btn-connect-google"),
 };
 
 /* ============ UTILITIES ============ */
@@ -229,23 +227,11 @@ function tokenHasScope(requiredScope) {
   return granted.includes(requiredScope);
 }
 function reflectConnectedScopes() {
-  // Adds .is-connected class and updates text when that scope was granted
   const ls = (localStorage.getItem(OAUTH.LS_SCOPE) || "").split(/\s+/);
-  if (els.btnConnectMail) {
-    const connected = ls.includes(OAUTH.SCOPE_MAIL);
-    els.btnConnectMail.classList.toggle("is-connected", connected);
-    els.btnConnectMail.textContent = connected ? "\u2713 Gmail Connected" : "Connect Gmail";
-  }
-  if (els.btnConnectCal) {
-    const connected = ls.includes(OAUTH.SCOPE_CAL);
-    els.btnConnectCal.classList.toggle("is-connected", connected);
-    els.btnConnectCal.textContent = connected ? "\u2713 Calendar Connected" : "Connect Calendar";
-  }
-  if (els.btnConnectBoth) {
-    const connected = ls.includes("https://www.googleapis.com/auth/gmail.readonly") &&
-      ls.includes("https://www.googleapis.com/auth/calendar.readonly");
-    els.btnConnectBoth.classList.toggle("is-connected", connected);
-    els.btnConnectBoth.textContent = connected ? "\u2713 All Connected" : "Connect Google";
+  if (els.btnConnectGoogle) {
+    const connected = ls.includes(OAUTH.SCOPE_MAIL) && ls.includes(OAUTH.SCOPE_CAL);
+    els.btnConnectGoogle.classList.toggle("is-connected", connected);
+    els.btnConnectGoogle.textContent = connected ? "\u2713 Gmail Connected" : "Connect Google";
   }
 }
 
@@ -474,11 +460,7 @@ async function sendQuery(raw) {
   } catch (err) {
     hideTyping();
     const msg = err?.message || String(err);
-    if (msg.includes("Missing Gmail access token")) {
-      addAssistantMessage("🔐 To check your inbox, please click 'Connect Google' and grant Gmail access.");
-    } else {
-      addAssistantMessage(`⚠️ Couldn’t reach server: ${escapeHTML(msg)}`);
-    }
+    addAssistantMessage(`⚠️ Couldn’t reach server: ${escapeHTML(msg)}`);
   }
 }
 
@@ -489,9 +471,7 @@ window.addEventListener("load", () => {
 
   // OAuth client + connect buttons
   initGoogleOAuth();
-  els.btnConnectMail?.addEventListener("click", () => requestAccessToken(OAUTH.SCOPE_MAIL, true));
-  els.btnConnectCal?.addEventListener("click", () => requestAccessToken(OAUTH.SCOPE_CAL, true));
-  els.btnConnectBoth?.addEventListener("click", () => requestAccessToken(OAUTH.SCOPE_BOTH, true));
+  els.btnConnectGoogle?.addEventListener("click", () => requestAccessToken(OAUTH.SCOPE_BOTH, true));
   reflectConnectedScopes();
 
   // Settings
