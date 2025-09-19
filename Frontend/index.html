@@ -1,52 +1,68 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-  <!--
-    HushhVoice — Clean HTML Shell (with working Google Sign-In)
-    -----------------------------------------------------------
-    ✅ What’s fixed / improved:
-      • Uses PROGRAMMATIC Google Sign-In render (most reliable in custom layouts)
-      • Hardens against the common localhost vs 127.0.0.1 origin mismatch
-      • Keeps your existing structure (sidebar, chat, settings) intact
-      • No client_secret on the frontend (never expose it)
-      • Minimal inline JS to render the button + post ID token to /api/signin
-
-    IMPORTANT (Dev):
-      • Open this site as http://localhost:5500 (NOT http://127.0.0.1:5500)
-        because Google treats them as different origins.
-      • Make sure your OAuth “Authorized JavaScript origins” includes:
-          http://localhost:5500
-  -->
-
   <meta charset="utf-8" />
   <title>HushhVoice — Your private, consent-first AI copilot</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="color-scheme" content="dark light" />
-  <meta name="description" content="HushhVoice is a consent-first personal AI that helps with email, scheduling, and visual understanding." />
+  <meta name="description"
+    content="HushhVoice is a consent-first personal AI that helps with email, scheduling, and visual understanding." />
   <meta name="theme-color" content="#0b0f14" />
-
   <link rel="icon" type="image/png" href="favicon.png" />
   <link rel="preload" as="image" href="Images/HushhVoice_Logo.png" imagesrcset="Images/HushhVoice_Logo.png" />
-
-  <!-- Fonts -->
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400..700&family=Sora:wght@300..800&display=swap" rel="stylesheet" />
-
-  <!-- App styles -->
   <link rel="stylesheet" href="style.css" />
 
-  <!-- Google Identity Services (GIS) -->
+  <!-- Space Grotesk (display) + Sora (UI) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400..700&family=Sora:wght@300..800&display=swap"
+    rel="stylesheet" />
+
+  <!-- Font nudges -->
+  <style>
+    :root {
+      --font: 14px/1.6 "Sora", system-ui, -apple-system, "Segoe UI", Roboto, Inter, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+      --font-display: "Space Grotesk", "Sora", system-ui, -apple-system, "Segoe UI", Roboto, Inter, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+    }
+
+    .brand-text .app-title,
+    .section-title,
+    .profile-name,
+    #rag-memory-title {
+      font-family: var(--font-display);
+      letter-spacing: .2px
+    }
+
+    body,
+    .btn,
+    .input,
+    .chat-box,
+    .section-title,
+    .app-title {
+      font-variant-numeric: proportional-nums slashed-zero;
+      font-feature-settings: "ss01" 1, "cv01" 1;
+    }
+
+    .bg-logo {
+      pointer-events: none
+    }
+  </style>
+
+  <!-- Google One-Tap (unchanged) -->
   <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 
 <body>
-  <noscript><div class="noscript">HushhVoice needs JavaScript to run. Please enable it and reload.</div></noscript>
+  <noscript>
+    <div class="noscript">HushhVoice needs JavaScript to run. Please enable it and reload.</div>
+  </noscript>
 
   <!-- Skip link -->
   <a href="#chat" class="visually-hidden focusable">Skip to chat</a>
 
-  <!-- Ambient background -->
+  <!-- Ambient -->
   <div class="bg-anim" aria-hidden="true"></div>
   <div class="bg-stars" aria-hidden="true">
     <div class="stars"></div>
@@ -62,13 +78,13 @@
       <div class="sidebar-header">
         <img src="Images/My_Image.jpg" alt="Your profile photo" class="profile-pic" />
         <div class="profile-info">
-          <h2 class="profile-name" id="profile-handle">Akshat</h2>
-          <p class="profile-subtitle" id="profile-subtitle">Signed-Out</p>
+          <h2 class="profile-name" id="profile-handle">you</h2>
+          <p class="profile-subtitle" id="profile-subtitle">Signed-out</p>
         </div>
       </div>
 
-      <nav class="sidebar-content" aria-label="Profile tools and memory">
-        <!-- CHATS: Sidebar Panel -->
+      <nav class="sidebar-content" aria-label="Chats and tools">
+        <!-- CHATS PANEL -->
         <section id="chats-panel" class="u-card chats-card" aria-labelledby="chats-title">
           <header class="chats-head">
             <h2 id="chats-title" class="section-title">Chats</h2>
@@ -79,13 +95,13 @@
 
             <div class="chats-search">
               <label for="chat-search" class="visually-hidden">Search chats</label>
-              <input id="chat-search" class="field chats-search-input" type="search" placeholder="Search…" autocomplete="off" />
+              <input id="chat-search" class="field chats-search-input" type="search" placeholder="Search…"
+                autocomplete="off" />
             </div>
           </header>
 
           <div class="chats-list-wrap u-focus-within" role="region" aria-label="Chat threads">
             <ol id="chat-threads" class="threads-list" aria-live="polite" aria-relevant="additions removals"></ol>
-
             <div id="chats-empty" class="threads-empty" aria-live="polite">
               No chats yet. Click <b>New Chat</b> to start one.
             </div>
@@ -106,21 +122,24 @@
             <div class="thread-actions" role="group" aria-label="Chat actions">
               <button class="btn action pin thread-pin" type="button" title="Pin chat" aria-label="Pin chat">
                 <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false">
-                  <path d="M14 2l4 4-2 2 3 3-2 2-3-3-2 2-4-4 2-2-4-4 4 4 2-2zM5 21l6-6 2 2-6 6H5z"/>
+                  <path d="M14 2l4 4-2 2 3 3-2 2-3-3-2 2-4-4 2-2-4-4 4 4 2-2zM5 21l6-6 2 2-6 6H5z" />
                 </svg>
                 <span class="action-label">Pin</span>
               </button>
 
-              <button class="btn action rename thread-rename" type="button" title="Rename chat" aria-label="Rename chat">
+              <button class="btn action rename thread-rename" type="button" title="Rename chat"
+                aria-label="Rename chat">
                 <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false">
-                  <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41L18.37 3.29a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/>
+                  <path
+                    d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41L18.37 3.29a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z" />
                 </svg>
                 <span class="action-label">Rename</span>
               </button>
 
-              <button class="btn action danger thread-delete" type="button" title="Delete chat" aria-label="Delete chat">
+              <button class="btn action danger thread-delete" type="button" title="Delete chat"
+                aria-label="Delete chat">
                 <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false">
-                  <path d="M6 7h12l-1 14H7L6 7zm3-3h6l1 2H8l1-2z"/>
+                  <path d="M6 7h12l-1 14H7L6 7zm3-3h6l1 2H8l1-2z" />
                 </svg>
                 <span class="action-label">Delete</span>
               </button>
@@ -128,7 +147,7 @@
           </li>
         </template>
 
-        <!-- Context menu (right-click) -->
+        <!-- Context menu -->
         <template id="tpl-thread-menu">
           <div class="thread-menu" role="menu">
             <button class="menu-item" type="button" role="menuitem" data-action="pin">Pin/Unpin</button>
@@ -154,11 +173,8 @@
 
       <div class="sidebar-footer">
         <div class="sidebar-footer-row">
-          <button id="btn-connect-google" class="btn small" type="button">Connect Google</button>
-        </div>
-        <div class="sidebar-footer-row">
-          <button id="open-settings" class="btn small btn-ghost" type="button"
-                  aria-label="Open Settings" aria-haspopup="dialog" aria-controls="settings-modal">
+          <button id="open-settings" class="btn small btn-ghost" type="button" aria-label="Open Settings"
+            aria-haspopup="dialog" aria-controls="settings-modal">
             ⚙️ Settings
           </button>
         </div>
@@ -169,18 +185,26 @@
     <div class="app" id="app">
       <!-- Topbar -->
       <header class="topbar" role="banner">
-        <button id="sidebar-toggle" class="btn icon" aria-label="Toggle sidebar" aria-controls="sidebar" aria-expanded="false" type="button">☰</button>
+        <button id="sidebar-toggle" class="btn icon" aria-label="Toggle sidebar" aria-controls="sidebar"
+          aria-expanded="false" type="button">☰</button>
 
         <a class="brand" href="#" aria-label="HushhVoice home">
-          <img src="Images/HushhVoice_Logo.png" alt="HushhVoice Logo" class="logo" width="68" height="68" decoding="async" />
+          <img src="Images/HushhVoice_Logo.png" alt="HushhVoice Logo" class="logo" width="68" height="68"
+            decoding="async" />
           <div class="brand-text">
             <h1 class="app-title">HushhVoice</h1>
             <p class="app-sub">Your private, consent-first AI copilot</p>
           </div>
         </a>
 
-        <!-- Google Sign-In Button mount point (programmatic render) -->
-        <div id="google-btn" style="min-width:200px; min-height:40px;"></div>
+        <!-- AUTH AREA (UNCHANGED) -->
+        <div class="auth" aria-live="polite">
+          <div id="google-login" class="google-login" aria-label="Sign in with Google"></div>
+          <div id="user-info" class="user-info" style="display:none">
+            <span id="user-email" class="user-email" aria-label="Signed in email"></span>
+            <button id="logout-btn" class="btn btn-ghost small" type="button" aria-label="Log out">Logout</button>
+          </div>
+        </div>
       </header>
 
       <!-- Chat -->
@@ -191,24 +215,34 @@
       <!-- Composer -->
       <footer class="composer" role="contentinfo">
         <div class="composer-inner">
-          <div id="attachment-bar" class="attachment-bar" hidden aria-live="polite"></div>
+          <!-- Attachment bar -->
+          <div id="attachment-bar" class="attachment-bar" style="display:none" aria-live="polite"></div>
 
           <div class="input-row">
+            <!-- TOOLTRAY: camera | gallery | mic | stop -->
             <div class="tooltray" role="group" aria-label="Quick actions">
-              <button id="mic-btn" class="btn icon mic" title="Hold to speak" aria-label="Voice input" type="button">🎤</button>
-              <button id="stop-btn" class="btn icon stop" title="Stop speaking" aria-label="Stop speaking" type="button">Stop</button>
+              <button id="stop-btn" class="btn icon stop" title="Stop speaking" aria-label="Stop speaking"
+                type="button">⏹</button>
+              <!-- Hidden file inputs (kept near triggers) -->
               <input id="image-input" type="file" accept="image/*" capture="environment" class="visually-hidden" />
               <input id="image-input-gallery" type="file" accept="image/*" class="visually-hidden" />
             </div>
 
+            <!-- Textarea -->
             <label for="user-input" class="visually-hidden">Message HushhVoice</label>
-            <textarea id="user-input" class="input" placeholder="Message HushhVoice…" rows="1" autocomplete="off" autocorrect="on" spellcheck="true" aria-multiline="true"></textarea>
+            <textarea id="user-input" class="input" placeholder="Message HushhVoice…" rows="1" autocomplete="off"
+              autocorrect="on" spellcheck="true" aria-multiline="true"></textarea>
 
+            <!-- Send -->
             <button id="send-btn" class="btn primary send" aria-label="Send message" type="button">➤</button>
           </div>
 
+          <!-- Hints -->
           <div class="hints">
-            <span>Press <kbd>Enter</kbd> to send • <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line • <kbd>🎤</kbd> to speak</span>
+            <span>
+              Press <kbd>Enter</kbd> to send • <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line • <kbd>📷</kbd> to scan
+              an item
+            </span>
           </div>
         </div>
       </footer>
@@ -226,14 +260,18 @@
   <template id="tpl-assistant">
     <li class="msg bot" data-role="assistant">
       <div class="avatar" aria-hidden="true">🤖</div>
-      <div class="bubble"><div class="content"></div></div>
+      <div class="bubble">
+        <div class="content"></div>
+      </div>
     </li>
   </template>
 
   <template id="tpl-user">
     <li class="msg user" data-role="user">
       <div class="avatar" aria-hidden="true">🧑</div>
-      <div class="bubble"><div class="content"></div></div>
+      <div class="bubble">
+        <div class="content"></div>
+      </div>
     </li>
   </template>
 
@@ -251,7 +289,7 @@
     </form>
   </dialog>
 
-  <!-- SETTINGS MODAL -->
+  <!-- SETTINGS MODAL (Bio + RAG moved here) -->
   <dialog id="settings-modal" class="modal settings-modal" aria-labelledby="settings-title" aria-modal="true">
     <form id="settings-form" method="dialog">
       <header class="settings-header">
@@ -262,11 +300,12 @@
             <p class="settings-sub">Private by default. You’re always in control.</p>
           </div>
         </div>
-        <button class="btn btn-ghost small settings-close" value="cancel" type="submit" aria-label="Close settings">✕</button>
+        <button class="btn btn-ghost small settings-close" value="cancel" type="submit"
+          aria-label="Close settings">✕</button>
       </header>
 
       <div class="settings-panel">
-        <!-- Data Consent -->
+        <!-- Consent options -->
         <section class="pane">
           <div class="pane-head">
             <h4 class="section-title">Data Consent</h4>
@@ -274,7 +313,8 @@
           </div>
 
           <div class="consent-grid">
-            <label class="consent-card" for="consent-mail" role="group" aria-labelledby="consent-mail-label" aria-describedby="consent-mail-desc">
+            <label class="consent-card" for="consent-mail" role="group" aria-labelledby="consent-mail-label"
+              aria-describedby="consent-mail-desc">
               <div class="consent-meta">
                 <div class="consent-icon" aria-hidden="true">📧</div>
                 <div>
@@ -286,7 +326,8 @@
               <span class="switch"></span>
             </label>
 
-            <label class="consent-card" for="consent-calendar" role="group" aria-labelledby="consent-calendar-label" aria-describedby="consent-calendar-desc">
+            <label class="consent-card" for="consent-calendar" role="group" aria-labelledby="consent-calendar-label"
+              aria-describedby="consent-calendar-desc">
               <div class="consent-meta">
                 <div class="consent-icon" aria-hidden="true">🗓️</div>
                 <div>
@@ -298,7 +339,8 @@
               <span class="switch"></span>
             </label>
 
-            <label class="consent-card" for="consent-health" role="group" aria-labelledby="consent-health-label" aria-describedby="consent-health-desc">
+            <label class="consent-card" for="consent-health" role="group" aria-labelledby="consent-health-label"
+              aria-describedby="consent-health-desc">
               <div class="consent-meta">
                 <div class="consent-icon" aria-hidden="true">💓</div>
                 <div>
@@ -310,7 +352,8 @@
               <span class="switch"></span>
             </label>
 
-            <label class="consent-card" for="consent-phone" role="group" aria-labelledby="consent-phone-label" aria-describedby="consent-phone-desc">
+            <label class="consent-card" for="consent-phone" role="group" aria-labelledby="consent-phone-label"
+              aria-describedby="consent-phone-desc">
               <div class="consent-meta">
                 <div class="consent-icon" aria-hidden="true">📱</div>
                 <div>
@@ -322,7 +365,8 @@
               <span class="switch"></span>
             </label>
 
-            <label class="consent-card" for="consent-app" role="group" aria-labelledby="consent-app-label" aria-describedby="consent-app-desc">
+            <label class="consent-card" for="consent-app" role="group" aria-labelledby="consent-app-label"
+              aria-describedby="consent-app-desc">
               <div class="consent-meta">
                 <div class="consent-icon" aria-hidden="true">📦</div>
                 <div>
@@ -338,14 +382,15 @@
 
         <hr class="pane-divider" />
 
-        <!-- About me (Bio) -->
+        <!-- About me -->
         <section class="pane">
           <div class="pane-head">
             <h4 class="section-title">About me</h4>
             <p class="section-sub">A short bio helps personalize your assistant’s tone and answers.</p>
           </div>
           <label for="bio-text-inline" class="visually-hidden">Bio</label>
-          <textarea id="bio-text-inline" class="field" rows="4" maxlength="600" placeholder="Write a short bio… (e.g., 'Founder at Hushh. I batch email at 9pm.')"></textarea>
+          <textarea id="bio-text-inline" class="field" rows="4" maxlength="600"
+            placeholder="Write a short bio… (e.g., 'Founder at Hushh. I batch email at 9pm.')"></textarea>
           <div class="section-actions">
             <span class="char-hint" id="bio-char-hint"><b>0</b>/600</span>
             <button id="bio-save-inline" class="btn primary small" type="button">Save Bio</button>
@@ -362,7 +407,8 @@
           </div>
 
           <div class="memory-form">
-            <input id="memory-inline" class="field" type="text" maxlength="600" placeholder="e.g., ‘I prefer 30-min meetings after 2pm.’" />
+            <input id="memory-inline" class="field" type="text" maxlength="600"
+              placeholder="e.g., ‘I prefer 30-min meetings after 2pm.’" />
             <button id="memory-add-inline" class="btn primary small" type="button">Add</button>
           </div>
 
@@ -386,7 +432,8 @@
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
 
-  <!-- Your app logic (chat, threads, etc.) -->
+  <!-- App logic -->
   <script src="script.js" defer></script>
 </body>
+
 </html>
