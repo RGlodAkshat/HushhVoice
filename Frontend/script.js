@@ -109,6 +109,7 @@ const KEYS = {
   BIO: "hushh_bio",
   MEMORIES: "hushh_memories",
   FACTS: "hushh_facts",
+  ONBOARDED: "hv_onboarded_v1",           // <— add this
 };
 
 /* =============================
@@ -545,8 +546,10 @@ function loadBio() { return lsGet(KEYS.BIO, ""); }
 function saveBio(text) { lsSet(KEYS.BIO, text || ""); }
 function setBioPreview(text) {
   const t = sanitize(text);
+  if (!els.bioPreviewText) return;        // 👈 add this guard
   els.bioPreviewText.textContent = t ? t : "Add a short bio to personalize your assistant.";
 }
+
 function openBioModal() { if (!els.bioModal) return; els.bioText.value = loadBio(); try { els.bioModal.showModal(); } catch {} }
 function closeBioModal() { try { els.bioModal.close(); } catch {} }
 els.openBioBtn?.addEventListener("click", openBioModal);
@@ -563,6 +566,46 @@ els.bioForm?.addEventListener("submit", (e) => {
    11) RAG Memory (placeholders)
    ============================= */
 // Keeping hooks intact for your memory UI elsewhere.
+
+
+
+function getIntroMessage() {
+  return [
+    "# 👋 Welcome to HushhVoice",
+    "Your private, consent-first copilot. Here’s what I can do:",
+    "",
+    "### What you can ask",
+    "• **General** — “What is attention in Neural Networks?”",
+    "• **Email** — “Summarize my last 5 important emails.”",
+    "• **Calendar** — “Summarize all important calender events for tomorrow.”",
+    "• **Schedule** — “Book 30m with Sam next Tue at 2pm; add Zoom.”",
+    "• **Reply** — “Send an email to Manish.sainani@gmail.com, reminding him of an upcoming meeting at 10AM today.”",
+    "• **Memory** — Tell me preferences (e.g., _I prefer 30-min meetings after 2pm_).",
+    "",
+    "### Make it yours",
+    "1. **Sign in with Google** (top right) to enable **Mail** and **Calendar**.",
+    "2. Open **Settings → About me** to set a short bio.",
+    "3. Use **RAG Memory** to save small facts/preferences.",
+    "",
+    "### Privacy",
+    "HushhVoice is consent-first: it only uses the sources you enable and only for the current task.",
+    "",
+    "### Quick starters",
+    "• _“What did I miss in my inbox today?”_",
+    "• _“Create a calendar event: Hushh sync, Wed 3–3:30pm, add Zoom.”_",
+    "• _“Scan this image and extract key details.”_",
+    "",
+    "_Tip: Press **Enter** to send, **Shift+Enter** for a new line._"
+  ].join("\n");
+}
+
+function showWelcomeThread() {
+  const t = createThread("Welcome to HushhVoice");
+  openThread(t.id);
+  appendMessage("assistant", getIntroMessage());
+}
+
+
 
 /* =============================
    12) FACTS (placeholder)
@@ -1035,7 +1078,7 @@ window.addEventListener("load", () => {
 
   // Bio & Memory (placeholders)
   setBioPreview(lsGet(KEYS.BIO, ""));
-  renderMemories?.(loadMemories?.()); // keep your existing hooks if defined
+  // renderMemories?.(loadMemories?.()); // keep your existing hooks if defined
 
   // Vision (placeholders)
   els.cameraBtn?.addEventListener("click", () => els.imageInput?.click());
@@ -1052,16 +1095,35 @@ window.addEventListener("load", () => {
   els.input?.focus?.();
   autoResize();
 
-  // THREADS: boot, restore, or create first thread
-  renderThreads();
-  const activeId = getActiveThreadId();
-  if (activeId) {
-    openThread(activeId);
-  } else if (loadThreads().length) {
-    openThread(loadThreads()[0].id);
-  } else {
-    const t = createThread("Untitled");
-    openThread(t.id);
+// THREADS: boot, restore, or create first thread
+renderThreads();
+const activeId = getActiveThreadId();
+if (activeId) {
+  openThread(activeId);
+} else if (loadThreads().length) {
+  openThread(loadThreads()[0].id);
+} else {
+  const t = createThread("Untitled");
+  openThread(t.id);
+}
+
+// One-time intro message after a thread is open
+if (!lsGet(KEYS.ONBOARDED, false)) {
+  const active = getActiveThreadId() || createThread().id;
+  setActiveThreadId(active);
+
+  // de-dupe: don't add if the same intro already exists in this thread
+  const intro = getIntroMessage();
+  const msgs = loadMsgs(active) || [];
+  const alreadyThere = msgs.some(m => m.role === "assistant" && m.text === intro);
+
+  if (!alreadyThere) {
+    appendMessage("assistant", intro);
   }
+
+  lsSet(KEYS.ONBOARDED, true);
+}
+
+
 });
 
