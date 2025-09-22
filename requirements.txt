@@ -6,3 +6,4 @@ google-auth-oauthlib
 flask-cors
 requests
 gunicorn
+python-dotenv
