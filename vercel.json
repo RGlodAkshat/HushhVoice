@@ -1,21 +1,13 @@
 {
     "version": 2,
     "builds": [
-      {
-        "src": "api/index.py",
-        "use": "@vercel/python"
-      },
-      {
-        "src": "Frontend/**/*",
-        "use": "@vercel/static"
-      }
+      { "src": "api/index.py", "use": "@vercel/python" },
+      { "src": "Frontend/**/*", "use": "@vercel/static" }
     ],
     "routes": [
       { "src": "/api/(.*)", "dest": "api/index.py" },
       { "src": "/(.*)", "dest": "Frontend/$1" }
     ],
-    "installCommand": "pip install -r requirements.txt",
-    "buildCommand": "",
-    "outputDirectory": "Frontend"
+    "installCommand": "pip install -r requirements.txt"
   }
   

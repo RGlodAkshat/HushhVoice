@@ -1,12 +1,12 @@
-# app.py
-# ensure Backend/ is on sys.path so `from agents...` works
+from __future__ import annotations
+
 import os, sys
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-BACKEND_DIR = os.path.join(BASE_DIR, "Backend")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))     # api/
+ROOT_DIR = os.path.dirname(BASE_DIR)                     # project root
+BACKEND_DIR = os.path.join(ROOT_DIR, "Backend")
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
-from __future__ import annotations
 
 import json
 import os
@@ -14,6 +14,9 @@ import time
 import uuid
 import logging
 from typing import Dict, Any, List, Tuple, Optional
+
+
+
 
 import datetime as dt
 import requests
@@ -847,4 +850,5 @@ def tts():
 # Run
 # =========================
 if __name__ == "__main__":
-  app.run(port=PORT, debug=DEBUG, threaded=True)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+
