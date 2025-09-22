@@ -173,10 +173,10 @@
 
       <div class="sidebar-footer">
         <div class="sidebar-footer-row">
-          <button id="open-settings" class="btn small btn-ghost" type="button" aria-label="Open Settings"
+          <!-- <button id="open-settings" class="btn small btn-ghost" type="button" aria-label="Open Settings"
             aria-haspopup="dialog" aria-controls="settings-modal">
             ⚙️ Settings
-          </button>
+          </button> -->
         </div>
       </div>
     </aside>
@@ -262,6 +262,13 @@
       <div class="avatar" aria-hidden="true">🤖</div>
       <div class="bubble">
         <div class="content"></div>
+  
+        <!-- Actions under assistant response -->
+        <div class="msg-actions" role="group" aria-label="Message actions">
+          <button class="btn tiny speak-btn" type="button" title="Speak this response" aria-label="Speak this response">
+            🔈 Speak
+          </button>
+        </div>
       </div>
     </li>
   </template>

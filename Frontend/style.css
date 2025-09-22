@@ -2474,7 +2474,73 @@ dialog[open] {
   color: var(--danger);
 }
 
+
+
+
+
 /* Reuse .memory-form/.memory-log styles defined above */
+
+
+/* === Assistant message action bar (Speak button) === */
+.msg .msg-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.msg.bot .bubble .msg-actions {
+  border-top: 1px solid rgba(127, 136, 160, 0.18);
+  padding-top: 10px;
+  margin-top: 12px;
+}
+
+/* Compact tiny button (inherits your .btn base) */
+.btn.tiny {
+  font-size: 12px;
+  line-height: 1;
+  padding: 6px 10px;
+  border-radius: 8px;
+  opacity: 0.95;
+}
+
+.btn.tiny:hover {
+  opacity: 1;
+}
+
+/* Speak button theme */
+.speak-btn.btn.tiny {
+  background: linear-gradient(180deg, #0f1726, #0c1426);
+  border-color: var(--border-2);
+  color: var(--text);
+}
+
+.speak-btn.btn.tiny:hover {
+  background: #141c30;
+  border-color: var(--border-3);
+}
+
+/* Keyboard focus */
+.msg .msg-actions .btn.tiny:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+}
+
+/* Small screens */
+@media (max-width: 420px) {
+  .btn.tiny { padding: 6px 9px; font-size: 11.5px; }
+  .msg .msg-actions { gap: 6px; }
+}
+
+/* Speak button while speaking -> Stop look */
+.speak-btn.is-speaking {
+  background: linear-gradient(180deg, rgba(239,68,68,.16), rgba(239,68,68,.08));
+  border-color: var(--danger, #ef4444);
+  color: #ffd7d7;
+}
+
+
 
 /* =========================
      END — Feature additions
