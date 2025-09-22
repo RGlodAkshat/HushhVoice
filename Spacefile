@@ -1,0 +1,12 @@
+micros:
+  - name: hushhvoice-api
+    src: .
+    engine: python3.11
+    run: gunicorn app:app --bind 0.0.0.0:8080
+    include:
+      - app.py
+      - requirements.txt
+      - Procfile
+      - Backend/**/*
+      - .env.examples
+      - *.py
