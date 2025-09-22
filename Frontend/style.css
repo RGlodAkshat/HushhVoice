@@ -936,9 +936,19 @@ body.compact .input {
   letter-spacing: .2px;
   color: var(--muted);
   display: inline-flex;
-  align-items: center;
+  align-items: right;
   gap: 6px;
 }
+
+.sidebar-header {
+  display: flex;
+  flex-direction: column;   /* stack name + subtitle */
+  justify-content: center;  /* vertical center */
+  align-items: center;      /* horizontal center */
+  height: 120px;            /* or whatever height you want */
+  text-align: center;
+}
+
 
 .profile-info .profile-subtitle::before {
   content: "";
