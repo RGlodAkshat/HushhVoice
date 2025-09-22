@@ -71,7 +71,7 @@ const els = {
    1) CONFIG & STORAGE KEYS
    ============================= */
 const CONFIG = {
-  BASE_URL: "",
+  BASE_URL: "/api",
   CLIENT_ID: "106283179463-48aftf364n2th97mone9s8mocicujt6c.apps.googleusercontent.com",
 
   GMAIL_SCOPES: [
