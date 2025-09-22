@@ -44,8 +44,16 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
 EMBED_MODEL = os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-small")
 
-MEMORY_PATH = os.getenv("MEMORY_PATH", "data/memory.json")
-os.makedirs(os.path.dirname(MEMORY_PATH), exist_ok=True)
+# On Vercel, the code dir is read-only. Use /tmp for writes.
+DEFAULT_MEMORY = "/tmp/hushh_memory.json"
+MEMORY_PATH = os.getenv("MEMORY_PATH", DEFAULT_MEMORY)
+try:
+    mem_dir = os.path.dirname(MEMORY_PATH) or "/tmp"
+    os.makedirs(mem_dir, exist_ok=True)
+except Exception:
+    # Ignore dir creation errors on read-only FS; we’ll no-op writes later
+    pass
+
 
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET", "hushh_secret_🔥")

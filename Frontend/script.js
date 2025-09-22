@@ -71,7 +71,7 @@ const els = {
    1) CONFIG & STORAGE KEYS
    ============================= */
 const CONFIG = {
-  BASE_URL: "/api",
+  BASE_URL: "https://hushhvoice-1.onrender.com",
   CLIENT_ID: "106283179463-48aftf364n2th97mone9s8mocicujt6c.apps.googleusercontent.com",
 
   GMAIL_SCOPES: [
