@@ -599,11 +599,7 @@ function getIntroMessage() {
   ].join("\n");
 }
 
-function showWelcomeThread() {
-  const t = createThread("Welcome to HushhVoice");
-  openThread(t.id);
-  appendMessage("assistant", getIntroMessage());
-}
+
 
 
 

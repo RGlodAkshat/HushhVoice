@@ -4,7 +4,8 @@
 <head>
   <meta charset="utf-8" />
   <title>HushhVoice — Your private, consent-first AI copilot</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport"
+    content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
   <meta name="color-scheme" content="dark light" />
   <meta name="description"
     content="HushhVoice is a consent-first personal AI that helps with email, scheduling, and visual understanding." />
@@ -75,14 +76,6 @@
   <div class="app-layout">
     <!-- Sidebar -->
     <aside id="sidebar" class="sidebar" aria-hidden="true" aria-label="Profile and settings">
-      <div class="sidebar-header">
-        <!-- <img src="Images/My_Image.jpg" alt="Your profile photo" class="profile-pic" /> -->
-        <div class="profile-info">
-          <h2 class="profile-name" id="profile-handle">you</h2>
-          <p class="profile-subtitle" id="profile-subtitle">Signed-out</p>
-        </div>
-      </div>
-
       <nav class="sidebar-content" aria-label="Chats and tools">
         <!-- CHATS PANEL -->
         <section id="chats-panel" class="u-card chats-card" aria-labelledby="chats-title">
@@ -172,13 +165,12 @@
       </nav>
 
       <div class="sidebar-footer">
-        <div class="sidebar-footer-row">
-          <!-- <button id="open-settings" class="btn small btn-ghost" type="button" aria-label="Open Settings"
-            aria-haspopup="dialog" aria-controls="settings-modal">
-            ⚙️ Settings
-          </button> -->
+        <div class="profile-mini">
+          <h2 class="profile-name" id="profile-handle">you</h2>
+          <p class="profile-subtitle" id="profile-subtitle">Signed-out</p>
         </div>
       </div>
+      
     </aside>
 
     <!-- Main App -->
@@ -261,7 +253,7 @@
       <div class="avatar" aria-hidden="true">🤖</div>
       <div class="bubble">
         <div class="content"></div>
-  
+
         <!-- Actions under assistant response -->
         <div class="msg-actions" role="group" aria-label="Message actions">
           <button class="btn tiny speak-btn" type="button" title="Speak this response" aria-label="Speak this response">
