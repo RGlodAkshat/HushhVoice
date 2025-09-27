@@ -423,6 +423,7 @@ body.light .topbar {
   z-index: 10;
 }
 
+
 .sidebar-header {
   display: flex;
   flex-direction: column;
@@ -1831,19 +1832,8 @@ a:focus-visible {
   }
 }
 
-/* >= 1100px: pin the sidebar as a column */
+/* >= 1100px: Only adjust topbar padding and logo size, keep sidebar behavior consistent */
 @media (min-width: 1100px) {
-  .app-layout {
-    grid-template-columns: 300px 1fr;
-  }
-
-  .app-layout .sidebar {
-    position: sticky;
-    top: 0;
-    height: 100dvh;
-    transform: none !important;
-  }
-
   .topbar {
     padding: var(--s-3) var(--s-4);
   }
