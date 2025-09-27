@@ -39,7 +39,6 @@ cd hushhvoice
 ### 2. Run the Backend
 
 ```bash
-cd backend
 
 # Create virtual env
 python -m venv .env
@@ -48,6 +47,7 @@ source .env/bin/activate   # on Mac/Linux
 
 # Install Python dependencies
 pip install -r requirements.txt
+
 ```
 
 ---

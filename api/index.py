@@ -3,7 +3,7 @@ from __future__ import annotations
 import os, sys
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))     # api/
 ROOT_DIR = os.path.dirname(BASE_DIR)                     # project root
-BACKEND_DIR = os.path.join(ROOT_DIR, "Backend")
+BACKEND_DIR = os.path.join(ROOT_DIR, "backend")
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
