@@ -2,11 +2,11 @@
     "version": 2,
     "builds": [
       { "src": "api/index.py", "use": "@vercel/python" },
-      { "src": "Frontend/**/*", "use": "@vercel/static" }
+      { "src": "frontend/**/*", "use": "@vercel/static" }
     ],
     "routes": [
       { "src": "/api/(.*)", "dest": "api/index.py" },
-      { "src": "/(.*)", "dest": "Frontend/$1" }
+      { "src": "/(.*)", "dest": "frontend/$1" }
     ],
     "installCommand": "pip install -r requirements.txt"
   }
