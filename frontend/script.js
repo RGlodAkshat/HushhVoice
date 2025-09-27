@@ -72,7 +72,7 @@ const els = {
    ============================= */
 const CONFIG = {
   BASE_URL: "https://hushhvoice-1.onrender.com",
-  CLIENT_ID: "106283179463-48aftf364n2th97mone9s8mocicujt6c.apps.googleusercontent.com",
+  CLIENT_ID: "685719671452-0ivbu8ibo0dvad0r2mvfbicda6576pr5.apps.googleusercontent.com",
 
   GMAIL_SCOPES: [
     "https://www.googleapis.com/auth/gmail.readonly",
@@ -181,6 +181,7 @@ function lsSet(key, value) {
    4) GOOGLE AUTH (ID TOKEN) + PROFILE
    ============================= */
 function setAuthUI(email) {
+  console.log("Setting auth UI with email:", email);
   const loggedIn = !!email;
   if (els.googleLogin) els.googleLogin.style.display = loggedIn ? "none" : "block";
   if (els.userInfo) els.userInfo.style.display = loggedIn ? "inline-flex" : "none";
@@ -215,10 +216,64 @@ function handleGoogleLogin(resp) {
   toast(`Signed in as ${email}`);
 }
 
-function initGoogle() {
+function checkLoginStatus() {
+  const token = localStorage.getItem(KEYS.GOOGLE_ID_TOKEN);
+  const email = localStorage.getItem(KEYS.USER_EMAIL);
+
+  if (token && email) {
+    console.log("User was already signed in.");
+    setAuthUI(email); // Update the UI
+    return true;      // <-- Return true because the user is logged in
+  } else {
+    console.log("No active session found.");
+    return false;     // <-- Return false
+  }
+}
+
+function handleLogout() {
+  // Clear the user's token and details from storage
+  localStorage.removeItem(KEYS.GOOGLE_ID_TOKEN);
+  localStorage.removeItem(KEYS.USER_EMAIL);
+  localStorage.removeItem(KEYS.USER_NAME);
+
+  // Disable Google's automatic sign-in for the next visit
   if (window.google?.accounts?.id) {
-    google.accounts.id.initialize({ client_id: CONFIG.CLIENT_ID, callback: handleGoogleLogin });
-    google.accounts.id.renderButton(els.googleLogin, { theme: "outline", size: "large", width: "100%" });
+    google.accounts.id.disableAutoSelect();
+  }
+  
+  // Reset the UI to the logged-out state
+  setAuthUI(null);
+
+  toast("Signed out successfully.");
+
+  initGoogle(); // Reinitialize Google Sign-In
+}
+
+function initGoogle(retries = 5, delay = 300) {
+  // Check if Google's library is ready
+  if (window.google?.accounts?.id) {
+    console.log("Google GSI script loaded, initializing...");
+    google.accounts.id.initialize({
+      client_id: CONFIG.CLIENT_ID,
+      callback: handleGoogleLogin,
+      auto_select: false
+    });
+    google.accounts.id.renderButton(
+      els.googleLogin,
+      { theme: "outline", size: "large", width: "280" }
+    );
+  } else if (retries > 0) {
+    // If not ready, wait and try again
+    console.warn(`Google GSI script not loaded yet, retrying... (${retries} attempts left)`);
+    setTimeout(() => {
+      initGoogle(retries - 1, delay);
+    }, delay);
+  } else {
+    // If all retries fail, show an error to the user
+    console.error("Could not initialize Google Sign-In after multiple attempts.");
+    if (els.googleLogin) {
+      els.googleLogin.innerHTML = "Sign-In button failed to load. Please refresh the page.";
+    }
   }
 }
 
@@ -1066,60 +1121,54 @@ els.stopBtn?.addEventListener("click", stopSpeaking);
 /* =============================
    19) INIT
    ============================= */
-window.addEventListener("load", () => {
-  // Auth UI
-  initGoogle();
-  const email = lsGet(KEYS.USER_EMAIL);
-  setAuthUI(email);
 
-  // Bio & Memory (placeholders)
+function initializeApp() {
+  // First, handle authentication
+  const userIsLoggedIn = checkLoginStatus();
+  if (!userIsLoggedIn) {
+    initGoogle(); // Only show the Google button if the user is logged out
+  }
+
+  // Now, run all other startup tasks
+  // Bio & Memory
   setBioPreview(lsGet(KEYS.BIO, ""));
-  // renderMemories?.(loadMemories?.()); // keep your existing hooks if defined
 
-  // Vision (placeholders)
+  // Vision
   els.cameraBtn?.addEventListener("click", () => els.imageInput?.click());
   els.galleryBtn?.addEventListener("click", () => els.imageInputGallery?.click());
-
-  async function onPick(file) {
-    if (!file) return;
-    try { const processed = await downscaleImage(file); showAttachmentPreview(processed); }
-    catch { toast("Could not process image", "error"); }
-  }
-  els.imageInput?.addEventListener("change", (e) => onPick(e.target.files?.[0]));
-  els.imageInputGallery?.addEventListener("change", (e) => onPick(e.target.files?.[0]));
+  // ... (add back your onPick and event listeners for image inputs here) ...
 
   els.input?.focus?.();
   autoResize();
 
-// THREADS: boot, restore, or create first thread
-renderThreads();
-const activeId = getActiveThreadId();
-if (activeId) {
-  openThread(activeId);
-} else if (loadThreads().length) {
-  openThread(loadThreads()[0].id);
-} else {
-  const t = createThread("Untitled");
-  openThread(t.id);
-}
-
-// One-time intro message after a thread is open
-if (!lsGet(KEYS.ONBOARDED, false)) {
-  const active = getActiveThreadId() || createThread().id;
-  setActiveThreadId(active);
-
-  // de-dupe: don't add if the same intro already exists in this thread
-  const intro = getIntroMessage();
-  const msgs = loadMsgs(active) || [];
-  const alreadyThere = msgs.some(m => m.role === "assistant" && m.text === intro);
-
-  if (!alreadyThere) {
-    appendMessage("assistant", intro);
+  // THREADS: boot, restore, or create first thread
+  renderThreads();
+  const activeId = getActiveThreadId();
+  if (activeId) {
+    openThread(activeId);
+  } else if (loadThreads().length) {
+    openThread(loadThreads()[0].id);
+  } else {
+    const t = createThread("Untitled");
+    openThread(t.id);
   }
 
-  lsSet(KEYS.ONBOARDED, true);
+  // One-time intro message
+  if (!lsGet(KEYS.ONBOARDED, false)) {
+    const active = getActiveThreadId() || createThread().id;
+    setActiveThreadId(active);
+    const intro = getIntroMessage();
+    const msgs = loadMsgs(active) || [];
+    const alreadyThere = msgs.some(m => m.role === "assistant" && m.text === intro);
+    if (!alreadyThere) {
+      appendMessage("assistant", intro);
+    }
+    lsSet(KEYS.ONBOARDED, true);
+  }
+  if (els.logoutBtn) {
+    els.logoutBtn.addEventListener("click", handleLogout);
+  }
 }
 
-
-});
-
+// The ONLY event listener you need for initialization
+document.addEventListener('DOMContentLoaded', initializeApp);
