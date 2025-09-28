@@ -855,7 +855,7 @@ def tts():
       )
 
       # Instead of .read(), we iterate over the audio in chunks and 'yield' them
-      for chunk in response.iter_bytes(chunk_size=4096):
+      for chunk in response.iter_bytes(chunk_size=512):
         yield chunk
 
     except Exception as e:
