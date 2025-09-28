@@ -20,7 +20,7 @@ from typing import Dict, Any, List, Tuple, Optional
 
 import datetime as dt
 import requests
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS, cross_origin
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -841,17 +841,28 @@ def tts():
   if not text:
     return jerror("Missing 'text' in request body", 400)
 
-  try:
-    result = client.audio.speech.create(
-      model="gpt-4o-mini-tts",
-      voice=voice,
-      input=text
-    )
-    audio_bytes = result.read()  # get full MP3 bytes
-    return Response(audio_bytes, mimetype="audio/mpeg")
-  except Exception as e:
-    log.exception("TTS generation error")
-    return jerror(f"TTS generation failed: {e}", 500)
+  # --- Start of Streaming Logic ---
+
+  def generate_audio_stream():
+    """This generator function streams the audio from OpenAI."""
+    try:
+      # The create call is the same, but the 'response' object it returns can be streamed
+      response = client.audio.speech.create(
+        model="tts-1",
+        voice=voice,
+        input=text,
+        response_format="mp3"  # <-- Change from "mp3" to "opus"
+      )
+
+      # Instead of .read(), we iterate over the audio in chunks and 'yield' them
+      for chunk in response.iter_bytes(chunk_size=4096):
+        yield chunk
+
+    except Exception as e:
+      # Log the error on the server. We can't send a JSON error in an audio stream.
+      log.exception("TTS streaming generation error")
+
+  return Response(stream_with_context(generate_audio_stream()), mimetype="audio/mpeg")
 
 
 # =========================
