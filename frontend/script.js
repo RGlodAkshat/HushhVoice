@@ -72,7 +72,7 @@ const els = {
    ============================= */
 const CONFIG = {
   BASE_URL: "https://hushhvoice-1.onrender.com",
-  CLIENT_ID: "685719671452-0ivbu8ibo0dvad0r2mvfbicda6576pr5.apps.googleusercontent.com",
+  CLIENT_ID: "106283179463-48aftf364n2th97mone9s8mocicujt6c.apps.googleusercontent.com",
 
   GMAIL_SCOPES: [
     "https://www.googleapis.com/auth/gmail.readonly",
