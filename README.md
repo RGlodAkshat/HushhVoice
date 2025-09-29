@@ -1,176 +1,135 @@
-# HushhVoice 🗣️ — Consent-first AI Copilot (FastAPI + GIS + Gmail)
+# HushhVoice 🗣️ — Consent-first AI Copilot
 
-HushhVoice is your private AI assistant that connects to Gmail (read-only), lets you sign in with Google, and chat using AI — all consent-first.
+HushhVoice is your private AI assistant that connects to your Google account, allowing you to interact with services like Gmail through a conversational AI, all while prioritizing user consent and privacy. This project uses a Flask backend for its API and a vanilla JavaScript frontend.
 
 ---
 
 ## 🧾 Project Structure
 
+The project is structured for easy local development and seamless deployment as a serverless application on Vercel.
+
 ```
-
-/project
+/
+├── api/
+│ └── index.py # Flask app for all API endpoints
 ├── backend/
-│   ├── main.py                # FastAPI app
-│   ├── agent/
-│   │   ├── auth.py            # Google ID token verification
-│   │   └── mail.py            # Gmail API logic
-│   ├── .env                   # secrets (you create this)
-│   └── requirements.txt
+│ ├── agents/ # AI assistants logic
+│ │ ├── email_assistant/
+│ │ ├── health_assistant/
+│ │ └── init.py
+│ ├── data/
+│ │ └── memory.json # Persistent memory data
+│ ├── .env # Environment variables (you create this)
+│ └── test.py # Tests
 ├── frontend/
-│   ├── index.html             # Main app UI (with GIS)
-│   ├── style.css              # App styles
-│   └── script.js              # App logic + GIS auth
+│ ├── index.html # Main app UI
+│ ├── script.js # Frontend logic
+│ └── style.css # App styles
+├── requirements.txt # Python dependencies
+├── README.md # Project documentation
+└── vercel.json # Vercel deployment configuration
 
 ````
 
 ---
 
-## 🛠️ How to Run This Code
+## 🛠️ Setup and Installation
 
-### 1. Clone the repo
+Follow these steps to get the project running on your local machine.
+
+### 1. Google Cloud Setup (Prerequisite)
+
+Before running the code, you need to configure your Google Cloud project.
+
+1.  **Enable the Gmail API:** In your Google Cloud Console, enable the "Gmail API".
+2.  **Configure OAuth Consent Screen:** Set up your consent screen. You can keep it in "Testing" mode, but you must add your Google account as a "Test user".
+3.  **Create an OAuth Client ID:**
+    * Go to **Credentials** and create a new **OAuth 2.0 Client ID**.
+    * Select **Web application** as the type.
+    * Add the following to **Authorised JavaScript origins**:
+        ```
+        http://localhost:3000
+        ```
+    * Add the following to **Authorised redirect URIs**:
+        ```
+        http://localhost:3000
+        ```
+4.  **Copy Your Client ID:** After creation, copy the Client ID. You will need it in the next steps.
+
+### 2. Clone and Set Up the Repository
 
 ```bash
-git clone https://github.com/your-username/hushhvoice.git
+# Clone the repository
+git clone [https://github.com/your-username/hushhvoice.git](https://github.com/your-username/hushhvoice.git)
 cd hushhvoice
-````
 
----
-
-### 2. Run the Backend
-
-```bash
-
-# Create virtual env
-python -m venv .env
-source .env/bin/activate   # on Mac/Linux
-# .\.env\Scripts\activate  # on Windows
+# Create a Python virtual environment
+python -m venv venv
+# Activate it (Mac/Linux)
+source venv/bin/activate
+# Activate it (Windows)
+# .\venv\Scripts\activate
 
 # Install Python dependencies
 pip install -r requirements.txt
+````
 
-```
+### 3\. Configure Environment Variables
 
----
+1.  **Create the `.env` file:** In the root of the project, create a new file named `.env`.
 
-### 3. Set Up Environment Variables
+2.  **Add your secrets:** Paste the following into the `.env` file, adding your own keys.
 
-Create a `.env` file inside `/backend/`:
+    ```
+    # Your secret key from the OpenAI platform
+    OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
-```
-OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
-```
+    # The Client ID you copied from Google Cloud Console
+    GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
+    ```
 
----
+3.  **Update the Frontend:** Open `frontend/script.js` and find the `CONFIG` object. Paste your `GOOGLE_CLIENT_ID` there as well.
 
-### 4. Add `credentials.json` (Optional for server-side Gmail)
+    ```javascript
+    const CONFIG = {
+      // ...
+      CLIENT_ID: "your-client-id.apps.googleusercontent.com",
+      // ...
+    };
+    ```
 
-If you’re planning to use server-side Gmail later (Option 2), create a file in `/backend/`:
+-----
 
-```
-backend/credentials.json
-```
+## 🚀 Running the Project
 
-Paste your **OAuth client (Web)** credentials downloaded from Google Cloud Console:
+This project uses the Vercel CLI to simulate the production environment locally, running both the frontend and the Python backend with a single command.
 
-```json
-{
-  "web": {
-    "client_id": "...",
-    "project_id": "...",
-    "auth_uri": "...",
-    "token_uri": "...",
-    "auth_provider_x509_cert_url": "...",
-    "client_secret": "...",
-    "redirect_uris": [...],
-    "javascript_origins": [...]
-  }
-}
-```
+1.  **Install the Vercel CLI:**
 
-> For **Option 1**, only `client_id` is used (in `.env` and frontend). You do **not** need the client secret in the frontend.
+    ```bash
+    npm install -g vercel
+    ```
 
----
+2.  **Start the development server:**
 
-### 5. Start the Backend API (Port 8000)
+    ```bash
+    vercel dev
+    ```
 
-```bash
-uvicorn main:app --reload --port 8000
-```
+Your application will now be running at 👉 `http://localhost:3000`. The server will automatically reload when you make changes to your code.
 
----
+-----
 
-### 6. Run the Frontend
+## ☁️ Deployment
 
-```bash
-cd frontend
-python -m http.server 5500
-```
+This project is pre-configured for deployment on [Vercel](https://vercel.com/). Simply connect your GitHub repository to a Vercel project, and it will be deployed automatically. Vercel will use the `vercel.json` and `requirements.txt` files to build and serve the application.
 
-Open the app at:
-👉 `http://127.0.0.1:5500/`
+-----
 
----
-
-## 🧪 Test Flow
-
-1. Sign in with Google (GIS button)
-2. Server verifies the ID token at `/api/signin`
-3. Click **Connect Gmail** to get a short-lived access token
-4. Gmail inbox preview appears (via `/api/gmail-preview`)
-5. Start chatting using `/api/echo`
-
----
-
-## ✅ Google Cloud Setup Checklist
-
-1. Enable **Gmail API**
-2. Configure **OAuth consent screen**
-3. Create an **OAuth client (Web)**
-
-   * Add these to "Authorized JavaScript origins":
-
-     ```
-     http://127.0.0.1:5500
-     http://127.0.0.1:8000
-     ```
-4. Copy `client_id` into:
-
-   * `.env` → `GOOGLE_CLIENT_ID`
-   * `index.html` → `data-client_id`
-
----
-
-## 🔐 LocalStorage Keys Used (Frontend)
-
-* `user_email`
-* `google_access_token`
-* `google_access_scope`
-
-These are stored client-side to power Gmail access and UI state.
-
----
-
-## 🔄 Want Refresh Tokens?
-
-Use Option 2 (server-side OAuth via Authorization Code Flow with PKCE). That gives you `refresh_token`, `access_token`, and `expires_in`. Ask when ready.
-
----
-
-## 🤝 Made by
-
-* You: Hushh founder, copilot, and steward of aloha + alpha
-* Me: ChatGPT, your code whisperer 💻✨
-
----
-
-## License
+## 🔐 License
 
 MIT — use freely, ship responsibly.
 
 ```
-
-Let me know when you're ready for:
-- `main.py` cleanup with `/api/signin`, `/api/gmail-preview`
-- or OpenAI-powered `/api/echo` routing if you're updating that next.
 ```
+
