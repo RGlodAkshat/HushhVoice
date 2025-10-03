@@ -388,6 +388,149 @@ def echo_stream():
 
 
 # =========================
+# Siri: /siri/ask
+# =========================
+@app.post("/siri/ask")
+def siri_ask():
+  """
+  Entry point for iOS App Intent "AskHushhVoice".
+  Body:
+    {
+      prompt: str,
+      locale?: str,
+      timezone?: str,
+      device_id?: str,
+      siri_session_id?: str,
+      capabilities?: { can_open_url?: bool, needs_tts_text?: bool },
+      tokens?: { app_jwt?: str, google_access_token?: str|null }
+    }
+  """
+  data = request.get_json(force=True, silent=True) or {}
+  prompt = (data.get("prompt") or "").strip()
+  if not prompt:
+    return jerror("Missing 'prompt'.", 400)
+
+  # 1) App auth (your JWT) – replace with your verifier
+  app_jwt = (data.get("tokens", {}) or {}).get("app_jwt")
+  if not app_jwt:
+    return jerror("Missing app auth.", 401, "unauthorized")
+  # TODO: verify app_jwt signature / expiry (Firebase, your own HMAC, etc.)
+
+  # 2) Optional Google token (enables mail/calendar intents)
+  gtoken = (data.get("tokens", {}) or {}).get("google_access_token")
+
+  # 3) Threading: single, rolling Siri thread per user
+  #    We'll key by the app user (from your verified JWT); placeholder:
+  user_email = request.headers.get("X-User-Email") or "siri@local"
+  thread_id = f"siri:{user_email}"
+  # Build a tiny memory window (Siri calls should be snappy)
+  messages = [
+    {"role": "system",
+     "content": ("You are HushhVoice — Siri channel. "
+                 "Respond briefly for speech. If the user asked about email or calendar "
+                 "but access is missing, say so plainly and stop.")},
+  ]
+  # Pull last few turns from your local store if you want; for now keep it short:
+  # recent = loadMsgs(thread_id)[-8:]  # (optional if you decide to persist Siri threads)
+  # for m in recent: messages.append({"role": "assistant" if m["role"]=="assistant" else "user",
+  #                                   "content": m["text"]})
+
+  messages.append({"role": "user", "content": prompt})
+
+  try:
+    # 4) Classify intent using your existing endpoint/model
+    #    To avoid an HTTP loop, call your classifier directly via client here as you do in /intent/classify:
+    intent = "general"
+    try:
+      tools = [{
+        "type": "function",
+        "name": "classify_intent",
+        "description": "Classify the user's query into one category.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "intent": {"type": "string",
+                       "enum": ["read_email","send_email","schedule_event","calendar_answer","health","general"]}
+          },
+          "required": ["intent"],
+          "additionalProperties": False
+        },
+        "strict": True
+      }]
+      resp = client.responses.create(
+        model="gpt-4o-mini",
+        input=[
+          {"role": "system", "content":
+           "You are an intent classifier. Choose exactly one: read_email, send_email, schedule_event, calendar_answer, health, general."},
+          {"role": "user", "content": prompt},
+        ],
+        tools=tools,
+        tool_choice={"type": "function", "name": "classify_intent"},
+      )
+      for item in resp.output:
+        if item.type == "function_call" and item.name == "classify_intent":
+          import json as _json
+          intent = _json.loads(item.arguments).get("intent","general")
+          break
+    except Exception as _:
+      intent = "general"
+
+    # 5) Route by intent
+    if intent in ("read_email", "send_email", "calendar_answer", "schedule_event") and not gtoken:
+      msg = "I need Google access to do that. Open HushhVoice to connect Gmail/Calendar."
+      return jok({"speech": msg, "display": msg})
+
+    if intent == "read_email":
+      # use your mailgpt/answer function directly to avoid another HTTP hop
+      # or call httpPostJSON("/mailgpt/answer", ...) if you want to keep one codepath
+      ans_resp = requests.post(
+        request.url_root.rstrip("/") + "/mailgpt/answer",
+        json={"query": prompt, "max_results": CONFIG.DEFAULT_EMAIL_FETCH},
+        headers={"X-Google-Access-Token": gtoken}  # forward token
+      )
+      jr = ans_resp.json()
+      speech = (jr.get("data",{}) or {}).get("answer") or "No answer."
+      return jok({"speech": speech[:350], "display": speech})
+
+    if intent == "calendar_answer":
+      cal_resp = requests.post(
+        request.url_root.rstrip("/") + "/calendar/answer",
+        json={"query": prompt, "max_results": 50},
+        headers={"X-Google-Access-Token": gtoken}
+      )
+      jr = cal_resp.json()
+      speech = (jr.get("data",{}) or {}).get("answer") or "No events found."
+      return jok({"speech": speech[:350], "display": speech})
+
+    if intent == "schedule_event":
+      # draft only; creation should be explicit with a follow-up “yes” from the app UI
+      plan_resp = requests.post(
+        request.url_root.rstrip("/") + "/calendar/plan",
+        json={"instruction": prompt, "confirm": False, "default_duration_minutes": 30},
+        headers={"X-Google-Access-Token": gtoken,
+                 "X-User-Name": request.headers.get("X-User-Name","")}
+      )
+      jr = plan_resp.json().get("data",{})
+      ev = jr.get("event",{})
+      if not ev:
+        msg = "I couldn’t draft that event."
+        return jok({"speech": msg, "display": msg})
+      hs = jr.get("human_summary","Draft ready.")
+      speech = f"Drafted: {ev.get('summary','(no title)')} at {ev.get('start','?')}."
+      return jok({"speech": speech[:300], "display": hs})
+
+    # General chat fallback (short, Siri-friendly)
+    out = _chat_complete(messages, temperature=0.5, max_tokens=240)
+    text = out["content"] or "Sorry, I didn’t catch that."
+    return jok({"speech": text[:350], "display": text})
+
+  except Exception as e:
+    log.exception("Siri ask failed")
+    msg = f"Error: {str(e)[:140]}"
+    return jerror(msg, 500, "siri_error")
+
+
+# =========================
 # Mail Q&A
 # =========================
 @app.post("/mailgpt/answer")
