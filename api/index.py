@@ -481,16 +481,15 @@ def siri_ask():
       return jok({"speech": msg, "display": msg})
 
     if intent == "read_email":
-      # use your mailgpt/answer function directly to avoid another HTTP hop
-      # or call httpPostJSON("/mailgpt/answer", ...) if you want to keep one codepath
       ans_resp = requests.post(
         request.url_root.rstrip("/") + "/mailgpt/answer",
-        json={"query": prompt, "max_results": CONFIG.DEFAULT_EMAIL_FETCH},
+        json={"query": prompt},   # 👈 removed CONFIG.DEFAULT_EMAIL_FETCH
         headers={"X-Google-Access-Token": gtoken}  # forward token
       )
       jr = ans_resp.json()
-      speech = (jr.get("data",{}) or {}).get("answer") or "No answer."
+      speech = (jr.get("data", {}) or {}).get("answer") or "No answer."
       return jok({"speech": speech[:350], "display": speech})
+
 
     if intent == "calendar_answer":
       cal_resp = requests.post(
@@ -1002,4 +1001,3 @@ def tts():
 # =========================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
-
