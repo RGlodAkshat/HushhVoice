@@ -593,7 +593,7 @@ def mailgpt_answer():
   messages = _append_task_block(messages, user_block, as_user=True)
 
   try:
-    out = _chat_complete(messages, temperature=0.4, max_tokens=500)
+    out = _chat_complete(messages, temperature=0.4, max_tokens=1000)
     answer = out["content"]
 
     # quick parse of "Relevant: [..]" to extract indices if present
