@@ -36,7 +36,7 @@ load_dotenv()
 
 APP_NAME = os.getenv("APP_NAME", "HushhVoice API")
 APP_VERSION = os.getenv("APP_VERSION", "0.5.0")
-PORT = int(os.getenv("PORT", "5000"))
+PORT = int(os.getenv("PORT", "5050"))
 DEBUG = os.getenv("DEBUG", "true").lower() in ("1", "true", "yes")
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -109,6 +109,38 @@ def _iso(dt_obj: dt.datetime) -> str:
         dt_obj = dt_obj.replace(tzinfo=dt.timezone.utc)
     return dt_obj.isoformat().replace("+00:00", "Z")
 
+def _normalize_event_datetime(dt_str: str, tz: Optional[str] = None) -> str:
+    """
+    Normalize a datetime string coming from the LLM into a format
+    that Google Calendar will accept as 'dateTime'.
+
+    Rules:
+      - If empty, raise.
+      - If format is 'YYYY-MM-DDTHH:MM', append ':00'.
+      - If it already has 'Z', '+' or '-' after the date, keep as-is.
+      - If it has no explicit offset, that's fine; we'll pass a separate
+        'timeZone' field in the event.
+    """
+    if not dt_str:
+        raise ValueError("Empty datetime string")
+
+    dt_str = dt_str.strip()
+
+    # If we have a simple local datetime without seconds like '2025-12-06T10:30'
+    if "T" in dt_str:
+        date_part, time_part = dt_str.split("T", 1)
+        # 'HH:MM' is length 5; add ':SS'
+        if len(time_part) == 5:
+            dt_str = f"{date_part}T{time_part}:00"
+
+    # Look at everything after the date portion
+    tail = dt_str[10:]
+    # If there's already a Z or an explicit offset, keep it as-is
+    if any(c in tail for c in ("Z", "+", "-")):
+        return dt_str
+
+    # No explicit offset: we rely on the separate 'timeZone' field.
+    return dt_str
 
 # =========================
 # JSON helpers
@@ -600,8 +632,8 @@ def calendar_plan_core(
             "Output STRICTLY valid JSON with keys:\n"
             "{\n"
             '  "summary": "string",                // title\n'
-            '  "start": "YYYY-MM-DDTHH:MM",        // local datetime (no seconds)\n'
-            '  "end": "YYYY-MM-DDTHH:MM",\n'
+            '  "start": "YYYY-MM-DDTHH:MM:SS",     // local datetime\n'
+            '  "end": "YYYY-MM-DDTHH:MM:SS",\n'
             '  "timezone": "IANA string",          // e.g., America/Los_Angeles\n'
             '  "attendees": ["email1", "email2"],\n'
             '  "location": "string",\n'
@@ -609,7 +641,9 @@ def calendar_plan_core(
             '  "conference": true|false            // request video link\n'
             "}\n"
             f"If the user doesn't specify an end time, default duration is {default_dur} minutes.\n"
-            "If timezone is missing, infer conservatively or leave blank."
+            "If timezone is missing, infer conservatively or leave blank.\n"
+            "If you omit an explicit offset in the datetime string, that's okay as long as the "
+            "format is valid ISO (YYYY-MM-DDTHH:MM:SS); the separate \"timezone\" field will be used."
         )
         messages.append({"role": "system", "content": system_prompt})
         messages = _append_task_block(
@@ -635,6 +669,7 @@ def calendar_plan_core(
             "description": obj.get("description") or "",
             "conference": bool(obj.get("conference", False)),
         }
+
         hs = (
             f"Title: {ev['summary']}\n"
             f"When: {ev['start']} → {ev['end']}"
@@ -650,7 +685,6 @@ def calendar_plan_core(
     # confirm == True -> create event
     ev = incoming_messages  # Not used in confirm branch; kept for signature compatibility
     raise NotImplementedError("Confirm flow should use the route-level implementation.")
-
 
 # =========================
 # Error Handlers
@@ -850,10 +884,13 @@ def siri_ask():
                 msg = "I hit an error reading your inbox. Please try again later."
                 return jok({"speech": msg, "display": msg})
 
-        # --- Email reply (draft only) ---
+        # --- Email reply (draft + send) ---
         if intent == "send_email":
             try:
                 user_name = request.headers.get("X-User-Name") or "Best regards,"
+                # Optional flag from client; defaults to True
+                send_now = bool(data.get("send_now", True))
+
                 drafted = draft_reply_from_mail(
                     access_token=gtoken,
                     instruction=prompt,
@@ -865,17 +902,35 @@ def siri_ask():
                 subject = drafted.get("subject") or "(no subject)"
                 body = drafted.get("body") or ""
 
-                speech = f"Drafted an email to {to_email} with subject: {subject}."
-                display = (
-                    f"**Draft preview**\n\n"
-                    f"- **To:** {to_email}\n"
-                    f"- **Subject:** {subject}\n\n"
-                    f"```text\n{body}\n```"
-                )
-                return jok({"speech": speech[:350], "display": display})
+                sent = False
+                if send_now and to_email != "(unknown)":
+                    try:
+                        sent = send_email(gtoken, to_email, subject, body)
+                    except Exception as e:
+                        log.exception("Siri send_email send failed: %s", e)
+                        sent = False
+
+                if sent:
+                    speech = f"Sent your email to {to_email} with subject: {subject}."
+                    display = (
+                        f"✅ **Email sent**\n\n"
+                        f"- **To:** {to_email}\n"
+                        f"- **Subject:** {subject}\n\n"
+                        f"```text\n{body}\n```"
+                    )
+                else:
+                    speech = f"Drafted an email to {to_email} with subject: {subject}."
+                    display = (
+                        f"**Draft preview**\n\n"
+                        f"- **To:** {to_email}\n"
+                        f"- **Subject:** {subject}\n\n"
+                        f"```text\n{body}\n```"
+                    )
+
+                return jok({"speech": speech[:350], "display": display, "sent": sent})
             except Exception as e:
-                log.exception("Siri send_email (draft) failed: %s", e)
-                msg = "I couldn't draft that email right now. Please try again in the app."
+                log.exception("Siri send_email failed: %s", e)
+                msg = "I couldn't send that email right now. Please try again in the app."
                 return jok({"speech": msg, "display": msg})
 
         # --- Calendar summarize ---
@@ -896,10 +951,15 @@ def siri_ask():
                 msg = "I hit an error reading your calendar. Try again in a bit."
                 return jok({"speech": msg, "display": msg})
 
-        # --- Calendar scheduling (draft only) ---
+                # --- Calendar scheduling (draft + create) ---
         if intent == "schedule_event":
             try:
                 user_name = request.headers.get("X-User-Name") or ""
+
+                # Optional timezone hint from iOS client
+                req_tz = (data.get("timezone") or "").strip() or None
+                default_tz = os.getenv("DEFAULT_TZ", "UTC")
+
                 draft = calendar_plan_core(
                     access_token=gtoken,
                     instruction=prompt,
@@ -915,13 +975,76 @@ def siri_ask():
                     msg = "I couldn’t draft that event."
                     return jok({"speech": msg, "display": msg})
 
-                speech = f"Drafted: {ev.get('summary', '(no title)')} at {ev.get('start', '?')}."
+                start_raw = ev.get("start") or ""
+                end_raw = ev.get("end") or ""
+
+                # 🔑 Always have a timezone: event → request → env → UTC
+                tz = (
+                    (ev.get("timezone") or "").strip()
+                    or req_tz
+                    or default_tz
+                )
+
+                if not start_raw or not end_raw:
+                    raise RuntimeError(f"Parsed event missing start/end: {ev}")
+
+                start_dt = _normalize_event_datetime(start_raw, tz)
+                end_dt = _normalize_event_datetime(end_raw, tz)
+
+                start_obj = {
+                    "dateTime": start_dt,
+                    "timeZone": tz,
+                }
+                end_obj = {
+                    "dateTime": end_dt,
+                    "timeZone": tz,
+                }
+
+                g_event: dict = {
+                    "summary": ev.get("summary") or "(No title)",
+                    "start": start_obj,
+                    "end": end_obj,
+                }
+                if ev.get("location"):
+                    g_event["location"] = ev["location"]
+                if ev.get("description") or user_name:
+                    desc = ev.get("description") or ""
+                    if user_name:
+                        desc = f"{desc}\n\n— {user_name}".strip()
+                    g_event["description"] = desc
+                if ev.get("attendees"):
+                    g_event["attendees"] = [{"email": a} for a in ev["attendees"]]
+
+                if ev.get("conference"):
+                    g_event["conferenceData"] = {
+                        "createRequest": {
+                            "requestId": str(uuid.uuid4()),
+                            "conferenceSolutionKey": {"type": "hangoutsMeet"},
+                        }
+                    }
+
+                created = _google_post(
+                    gtoken,
+                    "/calendars/primary/events?conferenceDataVersion=1",
+                    g_event,
+                )
+
+                speech = f"Scheduled {ev.get('summary', '(no title)')} at {start_dt}."
                 display = hs or speech
-                return jok({"speech": speech[:300], "display": display})
+
+                return jok({
+                    "speech": speech[:300],
+                    "display": display,
+                    "event_id": created.get("id"),
+                    "event_link": created.get("htmlLink"),
+                })
             except Exception as e:
                 log.exception("Siri schedule_event failed: %s", e)
-                msg = "I hit an error drafting that event. Please try again later."
-                return jok({"speech": msg, "display": msg})
+                # Dev-friendly: keep speech user-facing, show error in display for debugging
+                speech = "I hit an error scheduling that event. Please try again later."
+                display = f"{speech}\n\n[debug] {e}"
+                return jok({"speech": speech, "display": display})
+
 
         # --- Health placeholder ---
         if intent == "health":
@@ -1277,3 +1400,6 @@ def tts():
 if __name__ == "__main__":
     # Local dev only; Render will use gunicorn.
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", PORT)), debug=DEBUG)
+
+
+

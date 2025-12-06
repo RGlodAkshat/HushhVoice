@@ -72,7 +72,7 @@ const els = {
    ============================= */
 const CONFIG = {
   BASE_URL: "https://hushhvoice-1.onrender.com",
-  // BASE_URL: "https://a6ee2db28da0.ngrok-free.app",
+  // BASE_URL: "https://5334cbb4e81e.ngrok-free.app", // <-- your ngrok URL here
   CLIENT_ID: "106283179463-48aftf364n2th97mone9s8mocicujt6c.apps.googleusercontent.com",
 
   GMAIL_SCOPES: [
