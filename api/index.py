@@ -1393,6 +1393,338 @@ def tts():
         log.exception("TTS generation error")
         return jerror(f"TTS generation failed: {e}", 500)
 
+# =========================
+# /onboarding/agent (PUBLIC TEST)
+# Human, talkative onboarding + structured extraction (json_schema strict)
+# =========================
+
+HUSHHVOICE_URL_SUPABASE = os.getenv("HUSHHVOICE_URL_SUPABASE", "").rstrip("/")
+HUSHHVOICE_ANON_KEY_SUPABASE = os.getenv("HUSHHVOICE_ANON_KEY_SUPABASE", "").strip()
+ONBOARDING_TABLE_HUSHHVOICE = "onboarding_data_public_test"
+
+# "Ready" means: enough to prefill the website flow without sensitive bank numbers / SSN / DOB.
+MIN_READY_FIELDS_HUSHHVOICE = [
+    "investment_tier",          # standard | premium | ultra
+    "account_type",             # general | retirement
+    "account_structure",        # individual | other
+    "legal_first_name",
+    "legal_last_name",
+    "city",
+    "state",
+    "zip_code",
+    "initial_investment_amount",
+    "phone_number",
+    "residence_country",
+    "citizenship_country",
+    "residency_confirmed",
+    "referral_source",
+]
+
+# -------------------------
+# Supabase helpers
+# -------------------------
+def _sb_headers_hushhvoice():
+    if not HUSHHVOICE_URL_SUPABASE or not HUSHHVOICE_ANON_KEY_SUPABASE:
+        raise RuntimeError("Missing HUSHHVOICE_URL_SUPABASE or HUSHHVOICE_ANON_KEY_SUPABASE")
+    return {
+        "apikey": HUSHHVOICE_ANON_KEY_SUPABASE,
+        "Authorization": f"Bearer {HUSHHVOICE_ANON_KEY_SUPABASE}",
+        "Content-Type": "application/json",
+        "Prefer": "resolution=merge-duplicates,return=representation",
+    }
+
+def _sb_get_row_hushhvoice(client_user_id: str) -> dict:
+    url = (
+        f"{HUSHHVOICE_URL_SUPABASE}/rest/v1/{ONBOARDING_TABLE_HUSHHVOICE}"
+        f"?client_user_id=eq.{client_user_id}&select=*"
+    )
+    r = requests.get(url, headers=_sb_headers_hushhvoice(), timeout=15)
+    if r.status_code >= 400:
+        raise RuntimeError(f"Supabase GET failed: {r.status_code} {r.text}")
+    rows = r.json() or []
+    return rows[0] if rows else {}
+
+def _sb_upsert_row_hushhvoice(client_user_id: str, patch: dict) -> dict:
+    url = f"{HUSHHVOICE_URL_SUPABASE}/rest/v1/{ONBOARDING_TABLE_HUSHHVOICE}?on_conflict=client_user_id"
+    payload = {"client_user_id": client_user_id, **(patch or {})}
+    r = requests.post(url, headers=_sb_headers_hushhvoice(), json=payload, timeout=15)
+    if r.status_code >= 400:
+        raise RuntimeError(f"Supabase UPSERT failed: {r.status_code} {r.text}")
+    rows = r.json() or []
+    return rows[0] if rows else payload
+
+def _missing_fields_hushhvoice(row: dict) -> list[str]:
+    return [f for f in MIN_READY_FIELDS_HUSHHVOICE if row.get(f) in (None, "", [])]
+
+def _clean_patch(patch_obj: dict) -> dict:
+    patch = {}
+    for k, v in (patch_obj or {}).items():
+        if v is None:
+            continue
+        if isinstance(v, str) and not v.strip():
+            continue
+        patch[k] = v
+
+    # Normalize phone fields
+    if "phone_country_code" in patch:
+        s = str(patch["phone_country_code"]).strip()
+        if s and not s.startswith("+"):
+            s = "+" + s
+        patch["phone_country_code"] = s[:6]
+
+    if "phone_number" in patch:
+        import re
+        d = re.sub(r"\D", "", str(patch["phone_number"]))
+        patch["phone_number"] = d[:15] if d else patch["phone_number"]
+
+    # Normalize tier to lowercase bucket words if present
+    if "investment_tier" in patch and isinstance(patch["investment_tier"], str):
+        patch["investment_tier"] = patch["investment_tier"].strip().lower()
+
+    return patch
+
+
+# -------------------------
+# LLM turn: extract + human response + next question
+# -------------------------
+def _openai_onboarding_turn_hushhvoice(
+    user_text: str,
+    current_row: dict,
+    missing_fields: list[str],
+    questions_asked: int,
+) -> dict:
+    if not client:
+        # Offline fallback, still conversational
+        if not missing_fields:
+            return {
+                "patch": {},
+                "assistant_text": "Nice — that’s everything I needed. I’ll take you to HushhTech to finish up.",
+                "should_redirect": True,
+            }
+        nice = missing_fields[0].replace("_", " ")
+        return {
+            "patch": {},
+            "assistant_text": f"Got it. Quick one — what should I fill for your {nice}?",
+            "should_redirect": False,
+        }
+
+    # --- Fields we can safely prefill (NO SSN/DOB/routing/account numbers) ---
+    props = {
+        # Basic identity + contact
+        "legal_first_name": {"type": ["string", "null"]},
+        "legal_last_name": {"type": ["string", "null"]},
+        "phone_country_code": {"type": ["string", "null"]},
+        "phone_number": {"type": ["string", "null"]},
+
+        # Address / residency
+        "address_line_1": {"type": ["string", "null"]},
+        "address_line_2": {"type": ["string", "null"]},
+        "city": {"type": ["string", "null"]},
+        "state": {"type": ["string", "null"]},
+        "zip_code": {"type": ["string", "null"]},
+        "address_country": {"type": ["string", "null"]},
+        "citizenship_country": {"type": ["string", "null"]},
+        "residence_country": {"type": ["string", "null"]},
+        "residency_confirmed": {"type": ["boolean", "null"]},
+
+        # Account choices
+        "account_type": {"type": ["string", "null"], "enum": ["general", "retirement", None]},
+        "account_structure": {"type": ["string", "null"], "enum": ["individual", "other", None]},
+        "investment_tier": {"type": ["string", "null"], "enum": ["standard", "premium", "ultra", None]},
+
+        # Investment
+        "initial_investment_amount": {"type": ["number", "null"]},
+        "recurring_investment_enabled": {"type": ["boolean", "null"]},
+        "recurring_frequency": {"type": ["string", "null"], "enum": ["weekly","biweekly","monthly","bimonthly", None]},
+        "recurring_amount": {"type": ["number", "null"]},
+        "recurring_day_of_month": {"type": ["integer", "null"], "minimum": 1, "maximum": 31},
+
+        # Fund A selection
+        "selected_fund": {"type": ["string", "null"]},  # e.g. hushh_fund_a
+        "fund_class_a_units": {"type": ["integer", "null"], "minimum": 0},
+        "fund_class_b_units": {"type": ["integer", "null"], "minimum": 0},
+        "fund_class_c_units": {"type": ["integer", "null"], "minimum": 0},
+        "total_investment_amount": {"type": ["number", "null"]},
+
+        # Light banking (allowed)
+        "bank_name": {"type": ["string", "null"]},
+        "bank_account_type": {"type": ["string", "null"], "enum": ["checking", "savings", None]},
+
+        # Referral
+        "referral_source": {"type": ["string", "null"], "enum": [
+            "podcast",
+            "social_media_influencer",
+            "social_media_ad",
+            "yahoo_finance",
+            "ai_tool",
+            "website_blog_article",
+            "the_penny_hoarder",
+            "family_or_friend",
+            "tv_or_radio",
+            "other",
+            None
+        ]},
+        "referral_source_other": {"type": ["string", "null"]},
+
+        # Optional context from your first 2 standard questions
+        "net_worth": {"type": ["string", "null"]},
+        "investment_goals": {"type": ["string", "null"]},
+    }
+
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "patch": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": props,
+                "required": list(props.keys()),  # json_schema strict requirement
+            },
+            "assistant_text": {"type": "string"},
+            "should_redirect": {"type": "boolean"},
+        },
+        "required": ["patch", "assistant_text", "should_redirect"],
+    }
+
+    # Keep saved context small
+    saved_subset = {}
+    for k in props.keys():
+        v = current_row.get(k)
+        if v not in (None, "", [], {}):
+            saved_subset[k] = v
+
+    # Website copy injected as "knowledge" the agent can paraphrase/explain
+    website_context = {
+        "tiers": {
+            "standard": {"min": 1_000_000, "label": "Hushh Wealth Investment Account"},
+            "premium": {"min": 5_000_000, "label": "Hushh Wealth Investment Account (Premium)"},
+            "ultra": {"min": 25_000_000, "label": "Hushh Ultra High Net Worth Investment Account"},
+        },
+        "fund_a_classes": {
+            "class_a": {"unit": 25_000_000, "tier": "ultra"},
+            "class_b": {"unit": 5_000_000, "tier": "premium"},
+            "class_c": {"unit": 1_000_000, "tier": "standard"},
+        },
+        "resident_rule": "We currently accept investments from residents of the United States only.",
+        "do_not_collect": ["SSN", "DOB", "routing number", "account number", "account holder name"],
+    }
+
+    system_prompt = (
+        "You are Agent Kai — a warm, talkative, human onboarding concierge for Hushh Fund A.\n"
+        "You must produce ONE turn with 3 outputs: patch, assistant_text, should_redirect.\n\n"
+        "Extraction rules (patch):\n"
+        "- Extract ONLY what the user explicitly provided. Otherwise output null.\n"
+        "- Never invent.\n"
+        "- Convert money to numbers for numeric fields (e.g. '$1,000,000' -> 1000000).\n"
+        "- Phone number: digits only if possible.\n"
+        "- Never collect or ask for SSN, DOB, routing/account numbers, or account holder name.\n\n"
+        "Conversation rules (assistant_text):\n"
+        "- Sound like a real person. Start with a brief acknowledgement referencing what they said (1–2 short sentences).\n"
+        "- If the next thing you ask is a concept, explain it simply BEFORE asking:\n"
+        "  * investment_tier (standard/premium/ultra) with the minimums\n"
+        "  * account_structure (individual vs other)\n"
+        "  * Fund A classes (Class A/B/C) with unit minimums\n"
+        "- Ask ONE question that can capture multiple missing fields at once.\n"
+        "- Max 4 short sentences total. No bullets, no headings.\n"
+    )
+
+    user_payload = {
+        "latest_user_message": user_text,
+        "questions_asked": questions_asked,
+        "missing_fields": missing_fields,
+        "already_saved": saved_subset,
+        "website_context": website_context,
+    }
+
+    resp = client.chat.completions.create(
+        model=OPENAI_MODEL,
+        temperature=0.7,  # slightly higher -> more human tone
+        max_tokens=320,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": json.dumps(user_payload)},
+        ],
+        response_format={
+            "type": "json_schema",
+            "json_schema": {"name": "onboarding_turn", "schema": schema, "strict": True},
+        },
+    )
+
+    raw = (resp.choices[0].message.content or "").strip()
+    obj = json.loads(raw)
+
+    return {
+        "patch": _clean_patch(obj.get("patch") or {}),
+        "assistant_text": (obj.get("assistant_text") or "").strip(),
+        "should_redirect": bool(obj.get("should_redirect", False)),
+    }
+
+
+@app.post("/onboarding/agent")
+def onboarding_agent():
+    data = request.get_json(force=True, silent=True) or {}
+
+    client_user_id = (data.get("client_user_id") or "").strip()
+    user_text = (data.get("user_text") or "").strip()
+    questions_asked = int(data.get("questions_asked") or 1)
+
+    if not client_user_id:
+        return jerror("Missing client_user_id", 400)
+    if not user_text:
+        return jerror("Missing user_text", 400)
+
+    try:
+        current = _sb_get_row_hushhvoice(client_user_id) or {}
+        missing_before = _missing_fields_hushhvoice(current)
+
+        turn = _openai_onboarding_turn_hushhvoice(
+            user_text=user_text,
+            current_row=current,
+            missing_fields=missing_before,
+            questions_asked=questions_asked,
+        )
+
+        patch = turn["patch"]
+        saved = _sb_upsert_row_hushhvoice(client_user_id, patch) if patch else (current or {"client_user_id": client_user_id})
+
+        missing_after = _missing_fields_hushhvoice(saved)
+
+        # Optional: enforce US residency gating (without being rude)
+        # If user said they are NOT a US resident, don't redirect; keep clarifying.
+        if saved.get("residence_country") and str(saved.get("residence_country")).strip().lower() not in ("united states", "usa", "us"):
+            # keep going, ask to confirm residency
+            if "residency_confirmed" not in missing_after and saved.get("residency_confirmed") is True:
+                # still disallow redirect if not US
+                pass
+
+        should_redirect = bool(turn["should_redirect"]) or (not missing_after) or (questions_asked >= 12)
+
+        # If not US resident, do NOT redirect even if other fields are complete
+        if saved.get("residence_country") and str(saved.get("residence_country")).strip().lower() not in ("united states", "usa", "us"):
+            should_redirect = False
+
+        if should_redirect:
+            _sb_upsert_row_hushhvoice(client_user_id, {
+                "is_completed": True,
+                "completed_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+            })
+
+        assistant_text = (
+            "Awesome — that’s enough for me to pre-fill everything cleanly. I’ll take you to HushhTech to review and submit."
+            if should_redirect
+            else (turn["assistant_text"] or "Got it — what should we fill next?")
+        )
+
+        return jok({
+            "assistant_text": assistant_text,
+            "updates_applied": patch,
+            "missing_fields": missing_after,
+            "next_action": "redirect" if should_redirect else "continue",
+        })
+
+    except Exception as e:
+        return jerror(str(e), 500)
 
 # =========================
 # Run
