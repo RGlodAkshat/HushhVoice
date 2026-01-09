@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import os
+import sys
+
+# Ensure api/ is on sys.path when running via gunicorn (e.g., Render).
+sys.path.insert(0, os.path.dirname(__file__))
 
 from app_context import DEBUG, PORT, app
 
