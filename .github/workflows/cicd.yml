@@ -1,0 +1,58 @@
+name: Slack Notifier
+
+on:
+  workflow_run:
+    types: [completed]
+
+# Notify the configured Slack channel whenever any workflow run completes.
+# This workflow skips sending a notification for itself to avoid an infinite loop.
+
+jobs:
+  notify:
+    # don't run the notifier when the completed workflow was this notifier
+    if: ${{ github.event.workflow_run.name != 'Slack Notifier' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send Slack notification
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_CHANNEL: "#hushh-voice-website-github-check-ins"
+        run: |
+          python3 - <<'PY'
+          import os, json, urllib.request
+
+          event_path = os.environ.get('GITHUB_EVENT_PATH')
+          if not event_path:
+              print('No GITHUB_EVENT_PATH available; nothing to do.')
+              raise SystemExit(0)
+
+          with open(event_path) as f:
+              ev = json.load(f)
+
+          wr = ev.get('workflow_run', {})
+          conclusion = wr.get('conclusion') or 'unknown'
+          name = wr.get('name') or ev.get('workflow', {}).get('name') or 'Workflow'
+          url = wr.get('html_url') or ''
+          run_number = wr.get('run_number') or ''
+          repo = os.environ.get('GITHUB_REPOSITORY')
+          actor = (wr.get('actor') or {}).get('login') or ev.get('sender', {}).get('login') or os.environ.get('GITHUB_ACTOR')
+          branch = wr.get('head_branch') or ''
+          commit_msg = (wr.get('head_commit') or {}).get('message', '')
+
+          status_emoji = {'success':'✅','failure':'❌','cancelled':'⚠️'}.get(conclusion, '')
+
+          text = (
+              f"{status_emoji} *{repo}* — Workflow *{name}* (#{run_number}) finished with *{conclusion}*\\n"
+              f"• Branch: `{branch}`\\n"
+              f"• Triggered by: `{actor}`\\n"
+              f"• Commit: {commit_msg}\\n"
+              f"<{url}|View workflow run>"
+          )
+
+          payload = {"channel": os.environ.get('SLACK_CHANNEL'), "text": text, "mrkdwn": True}
+          data = json.dumps(payload).encode('utf-8')
+          req = urllib.request.Request(os.environ['SLACK_WEBHOOK_URL'], data=data, headers={'Content-Type': 'application/json'})
+          with urllib.request.urlopen(req) as resp:
+              print('Slack webhook response code:', resp.getcode())
+          PY
