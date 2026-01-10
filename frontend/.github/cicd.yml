@@ -43,10 +43,10 @@ jobs:
           status_emoji = {'success':'✅','failure':'❌','cancelled':'⚠️'}.get(conclusion, '')
 
           text = (
-              f"{status_emoji} *{repo}* — Workflow *{name}* (#{run_number}) finished with *{conclusion}*\n"
-              f"• Branch: `{branch}`\n"
-              f"• Triggered by: `{actor}`\n"
-              f"• Commit: {commit_msg}\n"
+              f"{status_emoji} *{repo}* — Workflow *{name}* (#{run_number}) finished with *{conclusion}*\\n"
+              f"• Branch: `{branch}`\\n"
+              f"• Triggered by: `{actor}`\\n"
+              f"• Commit: {commit_msg}\\n"
               f"<{url}|View workflow run>"
           )
 
