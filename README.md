@@ -1,176 +1,120 @@
-# HushhVoice 🗣️ — Consent-first AI Copilot (FastAPI + GIS + Gmail)
+# HushhVoice — Consent-first AI Copilot (Flask)
 
-HushhVoice is your private AI assistant that connects to Gmail (read-only), lets you sign in with Google, and chat using AI — all consent-first.
+HushhVoice is a private AI assistant with Gmail/Calendar support, Siri/Shortcuts integration, and onboarding flows. The backend lives in `api/` and runs as a Flask app.
 
----
-
-## 🧾 Project Structure
+## Project Structure
 
 ```
-
 /project
-├── backend/
-│   ├── main.py                # FastAPI app
-│   ├── agent/
-│   │   ├── auth.py            # Google ID token verification
-│   │   └── mail.py            # Gmail API logic
-│   ├── .env                   # secrets (you create this)
-│   └── requirements.txt
-├── frontend/
-│   ├── index.html             # Main app UI (with GIS)
-│   ├── style.css              # App styles
-│   └── script.js              # App logic + GIS auth
+├── api/
+│   ├── index.py              # Flask entrypoint (imports modules, runs app)
+│   ├── app_context.py        # App config, OpenAI client, logging, CORS
+│   ├── json_helpers.py       # jok/jerror + JSON file helpers
+│   ├── auth_helpers.py       # Google token helpers
+│   ├── google_helpers.py     # Google Calendar API helpers
+│   ├── openai_helpers.py     # OpenAI message handling + chat wrapper
+│   ├── intent_helpers.py     # Intent classification helper
+│   ├── mail_helpers.py       # Gmail fetching + LLM mail QA + drafting
+│   ├── calendar_helpers.py   # Calendar Q&A + planning helpers
+│   ├── error_handlers.py     # Flask error handlers (404/500)
+│   ├── routes_meta.py        # /health, /version
+│   ├── routes_intent.py      # /intent/classify
+│   ├── routes_echo.py        # /echo + /echo/stream
+│   ├── routes_siri.py        # /siri/ask
+│   ├── routes_mail.py        # /mailgpt/answer + /mailgpt/reply
+│   ├── routes_calendar.py    # /calendar/answer + /calendar/plan
+│   ├── routes_tts.py         # /tts
+│   ├── routes_onboarding_agent.py  # /onboarding/agent/*
+│   ├── routes_profile.py     # /profile (Supabase-backed profile)
+│   └── routes_identity_enrich.py   # /identity/enrich
+├── backend/                  # Supporting agent code (email helpers, etc.)
+├── frontend/                 # Web UI (if used)
+└── requirements.txt
+```
 
-````
+## Backend Overview (api/)
 
----
+- `index.py` is the entrypoint. It only imports modules so their routes register on the Flask `app`, then runs the server.
+- `app_context.py` centralizes configuration, logging, OpenAI client setup, and Flask+CORS init so every module shares the same app instance.
+- `json_helpers.py` provides consistent response shapes (`jok`, `jerror`) used by all routes.
+- `auth_helpers.py` and `google_helpers.py` wrap Google OAuth token handling and Calendar API calls.
+- `openai_helpers.py` contains the message normalization and OpenAI chat wrapper used by multiple endpoints.
+- `intent_helpers.py`, `mail_helpers.py`, and `calendar_helpers.py` group reusable logic for intent classification, Gmail Q&A/drafting, and Calendar Q&A/planning.
+- `routes_*.py` files each define a small set of related endpoints.
+- `routes_onboarding_agent.py` implements the Kai onboarding agent with Supabase-backed state.
+- `routes_profile.py` stores user profile data (name/phone/email) in Supabase.
 
-## 🛠️ How to Run This Code
+## How To Run The Backend
 
-### 1. Clone the repo
+### 1) Create and activate a virtual environment
 
 ```bash
-git clone https://github.com/your-username/hushhvoice.git
-cd hushhvoice
-````
+python -m venv .venv
+source .venv/bin/activate   # macOS/Linux
+# .\.venv\Scripts\activate  # Windows
+```
 
----
-
-### 2. Run the Backend
+### 2) Install dependencies
 
 ```bash
-
-# Create virtual env
-python -m venv .env
-source .env/bin/activate   # on Mac/Linux
-# .\.env\Scripts\activate  # on Windows
-
-# Install Python dependencies
 pip install -r requirements.txt
-
 ```
 
----
-
-### 3. Set Up Environment Variables
-
-Create a `.env` file inside `/backend/`:
-
-```
-OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
-```
-
----
-
-### 4. Add `credentials.json` (Optional for server-side Gmail)
-
-If you’re planning to use server-side Gmail later (Option 2), create a file in `/backend/`:
-
-```
-backend/credentials.json
-```
-
-Paste your **OAuth client (Web)** credentials downloaded from Google Cloud Console:
-
-```json
-{
-  "web": {
-    "client_id": "...",
-    "project_id": "...",
-    "auth_uri": "...",
-    "token_uri": "...",
-    "auth_provider_x509_cert_url": "...",
-    "client_secret": "...",
-    "redirect_uris": [...],
-    "javascript_origins": [...]
-  }
-}
-```
-
-> For **Option 1**, only `client_id` is used (in `.env` and frontend). You do **not** need the client secret in the frontend.
-
----
-
-### 5. Start the Backend API (Port 8000)
+### 3) Start the Flask backend
 
 ```bash
-uvicorn main:app --reload --port 8000
+python api/index.py
 ```
 
----
+The server will listen on port `5050` by default (or whatever `PORT` is set to).
 
-### 6. Run the Frontend
+If you prefer gunicorn:
 
 ```bash
-cd frontend
-python -m http.server 5500
+gunicorn api.index:app --bind 0.0.0.0:5050
 ```
 
-Open the app at:
-👉 `http://127.0.0.1:5500/`
+### 4) Expose with ngrok (optional for mobile testing)
 
----
-
-## 🧪 Test Flow
-
-1. Sign in with Google (GIS button)
-2. Server verifies the ID token at `/api/signin`
-3. Click **Connect Gmail** to get a short-lived access token
-4. Gmail inbox preview appears (via `/api/gmail-preview`)
-5. Start chatting using `/api/echo`
-
----
-
-## ✅ Google Cloud Setup Checklist
-
-1. Enable **Gmail API**
-2. Configure **OAuth consent screen**
-3. Create an **OAuth client (Web)**
-
-   * Add these to "Authorized JavaScript origins":
-
-     ```
-     http://127.0.0.1:5500
-     http://127.0.0.1:8000
-     ```
-4. Copy `client_id` into:
-
-   * `.env` → `GOOGLE_CLIENT_ID`
-   * `index.html` → `data-client_id`
-
----
-
-## 🔐 LocalStorage Keys Used (Frontend)
-
-* `user_email`
-* `google_access_token`
-* `google_access_scope`
-
-These are stored client-side to power Gmail access and UI state.
-
----
-
-## 🔄 Want Refresh Tokens?
-
-Use Option 2 (server-side OAuth via Authorization Code Flow with PKCE). That gives you `refresh_token`, `access_token`, and `expires_in`. Ask when ready.
-
----
-
-## 🤝 Made by
-
-* You: Hushh founder, copilot, and steward of aloha + alpha
-* Me: ChatGPT, your code whisperer 💻✨
-
----
-
-## License
-
-MIT — use freely, ship responsibly.
-
+```bash
+ngrok http 5050
 ```
 
-Let me know when you're ready for:
-- `main.py` cleanup with `/api/signin`, `/api/gmail-preview`
-- or OpenAI-powered `/api/echo` routing if you're updating that next.
+Use the HTTPS URL printed by ngrok (example: `https://xxxx.ngrok-free.app`) in your iOS app base URL.
+
+## Environment Variables (example)
+
+Create a `.env` at the project root (or set in your shell):
+
 ```
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-4o
+PORT=5050
+VERIFY_GOOGLE_TOKEN=false
+DEFAULT_TZ=UTC
+
+HUSHHVOICE_URL_SUPABASE=...
+HUSHHVOICE_SERVICE_ROLE_KEY_SUPABASE=...
+HUSHHVOICE_ONBOARDING_TABLE_SUPABASE=kai_onboarding_public_test
+HUSHHVOICE_ONBOARDING_STATE_COLUMN=state
+HUSHHVOICE_PROFILE_TABLE_SUPABASE=kai_user_profile
+HUSHHVOICE_SUPABASE_TIMEOUT_SECS=5
+HUSHH_ONBOARDING_CACHE_TTL=5
+```
+
+## Common Endpoints
+
+- `GET /health`
+- `POST /siri/ask`
+- `POST /echo` and `POST /echo/stream`
+- `POST /mailgpt/answer` and `POST /mailgpt/reply`
+- `POST /calendar/answer` and `POST /calendar/plan`
+- `POST /tts`
+- `GET /profile`, `POST /profile`
+- `GET /onboarding/agent/config`
+- `POST /onboarding/agent/token`
+- `POST /onboarding/agent/tool`
+- `GET /onboarding/agent/state`
+- `POST /onboarding/agent/reset`
+
+If you want this README to include frontend or iOS steps, tell me what to add.
