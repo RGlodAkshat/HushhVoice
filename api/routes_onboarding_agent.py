@@ -1,7 +1,7 @@
 # routes_onboarding_agent.py
-# Flask routes module for Kai investor discovery (STRICT 9-step flow)
+# Flask routes module for Kai investor discovery (STRICT 8-question flow)
 #
-# ✅ Only asks: Intro + Q1..Q8 + Close (no extra onboarding fields)
+# ✅ Only asks: Intro + Q1..Q8 (no extra onboarding fields)
 # ✅ Persistent memory (disk) so user can leave mid-way and resume
 # ✅ Pinned state + next-question selection so it never “drifts”
 # ✅ Tool relay endpoint for iOS: /onboarding/agent/tool
@@ -25,8 +25,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from datetime import datetime
+from threading import Lock
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import quote
 
 import requests
 from flask import request
@@ -69,7 +72,7 @@ FUND_CONTEXT = {
 }
 
 # ============================================================
-# Strict 9-step flow (Intro + Q1..Q8 + Close)
+# Strict flow (Intro + Q1..Q8)
 # ============================================================
 
 # Keys we store (ONLY these)
@@ -83,8 +86,6 @@ DISCOVERY_KEYS = [
     "experience_regret",            # Q5
     "fund_fit_alignment",           # Q6
     "allocation_mechanics_depth",   # Q7
-    "contact_full_name",            # Q8
-    "contact_email",                # Q8
     "contact_country",              # Q8
 ]
 
@@ -150,10 +151,9 @@ QUESTIONS: List[Dict[str, Any]] = [
     },
     {
         "id": "Q8",
-        "keys": ["contact_full_name", "contact_email", "contact_country"],
+        "keys": ["contact_country"],
         "text": (
-            "To move forward later, we’ll need a few basics. "
-            "Could you share your full name, email, and country? You can answer all three together."
+            "To wrap up, which country are you based in?"
         ),
     },
 ]
@@ -161,6 +161,10 @@ QUESTIONS: List[Dict[str, Any]] = [
 CLOSE_TEXT = (
     "That’s enough for now. Would you like me to summarize what I’ve understood, "
     "or should we continue later?"
+)
+
+COMPLETE_TEXT = (
+    "Thanks — I have everything I need. I’ll show you a concise summary now."
 )
 
 INTRO_TEXT = (
@@ -188,8 +192,17 @@ DEFAULT_STATE: Dict[str, Any] = {
     "notes": [],
 }
 
-# In-memory cache (dev). Disk is source of truth on restarts.
+# In-memory cache (dev). Supabase (if enabled) is source of truth across restarts.
 _STATE_BY_USER: Dict[str, Dict[str, Any]] = {}
+_STATE_BY_USER_TS: Dict[str, float] = {}
+_STATE_LOCK = Lock()
+
+SUPABASE_URL = os.environ.get("HUSHHVOICE_URL_SUPABASE", "").rstrip("/")
+SUPABASE_SERVICE_ROLE_KEY = os.environ.get("HUSHHVOICE_SERVICE_ROLE_KEY_SUPABASE", "")
+SUPABASE_ONBOARDING_TABLE = os.environ.get("HUSHHVOICE_ONBOARDING_TABLE_SUPABASE", "kai_onboarding_state")
+SUPABASE_ONBOARDING_STATE_COLUMN = os.environ.get("HUSHHVOICE_ONBOARDING_STATE_COLUMN", "state")
+SUPABASE_TIMEOUT_SECS = float(os.environ.get("HUSHHVOICE_SUPABASE_TIMEOUT_SECS", "5"))
+STATE_CACHE_TTL_SECS = int(os.environ.get("HUSHH_ONBOARDING_CACHE_TTL", "5"))
 
 
 def _now_iso() -> str:
@@ -210,6 +223,70 @@ def _state_path(user_id: str) -> str:
     return os.path.join(_state_dir(), f"{_safe_user_id(user_id)}.json")
 
 
+def _supabase_enabled() -> bool:
+    return bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY)
+
+
+def _supabase_table_url() -> str:
+    return f"{SUPABASE_URL}/rest/v1/{SUPABASE_ONBOARDING_TABLE}"
+
+
+def _supabase_headers() -> Dict[str, str]:
+    return {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+        "Content-Type": "application/json",
+    }
+
+
+def _cache_get(user_id: str) -> Optional[Dict[str, Any]]:
+    if STATE_CACHE_TTL_SECS <= 0:
+        return None
+    now = time.time()
+    with _STATE_LOCK:
+        ts = _STATE_BY_USER_TS.get(user_id)
+        if not ts:
+            return None
+        if now - ts > STATE_CACHE_TTL_SECS:
+            _STATE_BY_USER.pop(user_id, None)
+            _STATE_BY_USER_TS.pop(user_id, None)
+            return None
+        return _STATE_BY_USER.get(user_id)
+
+
+def _cache_set(user_id: str, st: Dict[str, Any]) -> None:
+    if STATE_CACHE_TTL_SECS <= 0:
+        return
+    with _STATE_LOCK:
+        _STATE_BY_USER[user_id] = st
+        _STATE_BY_USER_TS[user_id] = time.time()
+
+
+def _cache_clear(user_id: str) -> None:
+    with _STATE_LOCK:
+        _STATE_BY_USER.pop(user_id, None)
+        _STATE_BY_USER_TS.pop(user_id, None)
+
+
+def _load_state_from_supabase(user_id: str) -> Optional[Dict[str, Any]]:
+    if not _supabase_enabled():
+        return None
+    url = f"{_supabase_table_url()}?user_id=eq.{quote(user_id, safe='')}&select={SUPABASE_ONBOARDING_STATE_COLUMN}"
+    try:
+        resp = requests.get(url, headers=_supabase_headers(), timeout=SUPABASE_TIMEOUT_SECS)
+        if resp.status_code >= 400:
+            log.warning("Supabase load failed: %s", resp.text)
+            return None
+        rows = resp.json() or []
+        if not rows:
+            return None
+        state = rows[0].get(SUPABASE_ONBOARDING_STATE_COLUMN)
+        return state if isinstance(state, dict) else None
+    except Exception:
+        log.exception("Failed to load state from Supabase")
+        return None
+
+
 def _load_state_from_disk(user_id: str) -> Optional[Dict[str, Any]]:
     path = _state_path(user_id)
     if not os.path.exists(path):
@@ -222,6 +299,39 @@ def _load_state_from_disk(user_id: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _load_state(user_id: str) -> Optional[Dict[str, Any]]:
+    cached = _cache_get(user_id)
+    if cached is not None:
+        return cached
+
+    st = _load_state_from_supabase(user_id) if _supabase_enabled() else None
+    if st is None:
+        st = _load_state_from_disk(user_id)
+    if st is not None:
+        _cache_set(user_id, st)
+    return st
+
+
+def _save_state_to_supabase(user_id: str, st: Dict[str, Any]) -> bool:
+    if not _supabase_enabled():
+        log.info("[Onboarding] Supabase disabled; skipping save user_id=%s", user_id)
+        return False
+    url = _supabase_table_url()
+    headers = _supabase_headers()
+    headers["Prefer"] = "resolution=merge-duplicates,return=minimal"
+    payload = {"user_id": user_id, SUPABASE_ONBOARDING_STATE_COLUMN: st}
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=SUPABASE_TIMEOUT_SECS)
+        if resp.status_code >= 400:
+            log.warning("Supabase save failed: status=%s body=%s", resp.status_code, resp.text)
+            return False
+        log.info("[Onboarding] Supabase save ok user_id=%s table=%s", user_id, SUPABASE_ONBOARDING_TABLE)
+        return True
+    except Exception:
+        log.exception("Failed to save state to Supabase")
+        return False
+
+
 def _save_state_to_disk(user_id: str, st: Dict[str, Any]) -> None:
     path = _state_path(user_id)
     try:
@@ -229,6 +339,27 @@ def _save_state_to_disk(user_id: str, st: Dict[str, Any]) -> None:
             json.dump(st, f, ensure_ascii=False, indent=2)
     except Exception:
         log.exception("Failed to save state to disk")
+
+
+def _save_state(user_id: str, st: Dict[str, Any]) -> None:
+    _cache_set(user_id, st)
+    if _save_state_to_supabase(user_id, st):
+        return
+    _save_state_to_disk(user_id, st)
+
+
+def _delete_state_from_supabase(user_id: str) -> None:
+    if not _supabase_enabled():
+        return
+    url = f"{_supabase_table_url()}?user_id=eq.{quote(user_id, safe='')}"
+    headers = _supabase_headers()
+    headers["Prefer"] = "return=minimal"
+    try:
+        resp = requests.delete(url, headers=headers, timeout=SUPABASE_TIMEOUT_SECS)
+        if resp.status_code >= 400:
+            log.warning("Supabase delete failed: %s", resp.text)
+    except Exception:
+        log.exception("Failed to delete state from Supabase")
 
 
 def _deep_copy(obj: Any) -> Any:
@@ -245,14 +376,11 @@ def _get_user_id() -> str:
 
 
 def _get_or_init_state(user_id: str) -> Dict[str, Any]:
-    st = _STATE_BY_USER.get(user_id)
-    if st:
-        return st
-
-    st = _load_state_from_disk(user_id)
+    st = _load_state(user_id)
     if not st:
         st = _deep_copy(DEFAULT_STATE)
         st["created_at"] = _now_iso()
+    st.setdefault("created_at", _now_iso())
     st["updated_at"] = _now_iso()
 
     # Ensure all keys exist (for forward compatibility)
@@ -265,7 +393,10 @@ def _get_or_init_state(user_id: str) -> Dict[str, Any]:
     st.setdefault("phase", "discovery")
     st.setdefault("last_question_id", None)
 
-    _STATE_BY_USER[user_id] = st
+    if not _missing_keys(st):
+        st["phase"] = "complete"
+
+    _cache_set(user_id, st)
     return st
 
 
@@ -309,12 +440,17 @@ def _append_note(st: Dict[str, Any], note: str) -> None:
 
 
 def _compact_state(st: Dict[str, Any]) -> Dict[str, Any]:
+    is_complete = len(_missing_keys(st)) == 0
+    completed_questions = _completed_questions_count(st)
     return {
         "phase": st.get("phase"),
         "last_question_id": st.get("last_question_id"),
         "preferred_language": st.get("preferred_language", "English"),
         "discovery": st.get("discovery", {}),
         "missing_keys": _missing_keys(st),
+        "is_complete": is_complete,
+        "completed_questions": completed_questions,
+        "total_questions": len(QUESTIONS),
         "fund": {
             "fund_name": st["fund_context"]["fund_name"],
             "tagline": st["fund_context"]["tagline"],
@@ -322,6 +458,15 @@ def _compact_state(st: Dict[str, Any]) -> Dict[str, Any]:
         },
         "notes_tail": (st.get("notes") or [])[-5:],
     }
+
+
+def _completed_questions_count(st: Dict[str, Any]) -> int:
+    disc = st.get("discovery", {})
+    count = 0
+    for q in QUESTIONS:
+        if all(_is_filled(disc.get(k)) for k in q["keys"]):
+            count += 1
+    return count
 
 
 # ============================================================
@@ -418,7 +563,7 @@ STYLE:
 
 STRICT FLOW:
 You are ONLY allowed to ask the following questions in order (no extra questions):
-Q1..Q8 and then the Close question.
+Q1..Q8. Do not ask any other questions.
 Do not ask for city/zip/phone/etc. Do not ask for any other fields.
 
 INTRO (use once at the beginning or when user returns after a break):
@@ -434,16 +579,17 @@ Q6: "{QUESTIONS[5]['text']}"
 Q7: "{QUESTIONS[6]['text']}"
 Q8: "{QUESTIONS[7]['text']}"
 
-CLOSE:
-"{CLOSE_TEXT}"
+WHEN COMPLETE:
+"{COMPLETE_TEXT}"
 
 HOW TO USE MEMORY (MANDATORY):
 - Your job is to ask ONLY the next missing question and then wait.
 - After user answers, immediately call:
   memory_set(patch={{discovery:{{...}}, last_question_id:"<Q#>", phase:"discovery"}}, note:"optional")
 - Fill only the relevant keys for that question. Do not fabricate.
+- If all required fields are filled, say the completion line and stop (no further questions).
 - If user says "continue later", do NOT ask new questions.
-- If user asks for summary, call memory_review(style="short") and read it out, then ask the CLOSE question.
+- If user asks for summary, call memory_review(style="short") and read it out, then stop.
 
 FUND CONTEXT (consistent, short; only mention when needed or at Q6):
 {chr(10).join(fund_lines)}
@@ -462,10 +608,10 @@ def build_kickoff(st: Dict[str, Any]) -> Dict[str, Any]:
     """
     next_q = _next_question(st)
     if not next_q:
-        # All collected -> close
+        # All collected -> short completion line only
         instructions = (
-            "We’re already good. Ask the CLOSE question now: "
-            f"“{CLOSE_TEXT}”"
+            "We’re already good. Say this exactly and stop: "
+            f"“{COMPLETE_TEXT}”"
         )
         return {
             "type": "response.create",
@@ -497,9 +643,10 @@ def build_kickoff(st: Dict[str, Any]) -> Dict[str, Any]:
 @app.get("/onboarding/agent/config")
 def onboarding_agent_config():
     user_id = _get_user_id()
+    log.info("[Onboarding] config user_id=%s", user_id)
     st = _get_or_init_state(user_id)
     st["updated_at"] = _now_iso()
-    _save_state_to_disk(user_id, st)
+    _save_state(user_id, st)
 
     cfg = {
         "agent": {"name": "Kai"},
@@ -511,7 +658,7 @@ def onboarding_agent_config():
                 "threshold": 0.6,
                 "prefix_padding_ms": 300,
                 "silence_duration_ms": 700,
-                "create_response": True,
+                "create_response": False,
                 "interrupt_response": True,
             },
         },
@@ -520,9 +667,14 @@ def onboarding_agent_config():
         "instructions": build_kai_instructions(st),
         "state_compact": _compact_state(st),
         "missing_keys": _missing_keys(st),
+        "is_complete": len(_missing_keys(st)) == 0,
         "next_question": (_next_question(st) or {}).get("id"),
+        "next_question_text": (_next_question(st) or {}).get("text"),
+        "completed_questions": _completed_questions_count(st),
+        "total_questions": len(QUESTIONS),
         "kickoff": build_kickoff(st),
     }
+    log.info("[Onboarding] config ok user_id=%s missing=%s next=%s", user_id, _missing_keys(st), cfg.get("next_question"))
     return jok(cfg)
 
 
@@ -535,6 +687,7 @@ def onboarding_agent_token():
     data = request.get_json(force=True, silent=True) or {}
     model = (data.get("model") or REALTIME_MODEL).strip()
     ttl_seconds = data.get("ttl_seconds")
+    log.info("[Onboarding] token request model=%s ttl=%s", model, ttl_seconds)
 
     # SDK path if available
     try:
@@ -546,6 +699,7 @@ def onboarding_agent_token():
             secret = getattr(getattr(sess, "client_secret", None), "value", None)
             if not secret:
                 return jerror("Missing client_secret in realtime session response.", 500)
+            log.info("[Onboarding] token ok model=%s sdk=1", model)
             return jok({"client_secret": secret, "model": model})
     except Exception:
         log.exception("SDK realtime.sessions.create failed; falling back to REST")
@@ -574,6 +728,7 @@ def onboarding_agent_token():
         secret = (out.get("client_secret") or {}).get("value")
         if not secret:
             return jerror("Missing client_secret in realtime session response.", 500)
+        log.info("[Onboarding] token ok model=%s sdk=0", model)
         return jok({"client_secret": secret, "model": model})
 
     except Exception as e:
@@ -601,6 +756,7 @@ def onboarding_agent_tool():
 
     st = _get_or_init_state(user_id)
     st["updated_at"] = _now_iso()
+    log.info("[Onboarding] tool=%s user_id=%s supabase=%s", tool_name, user_id, _supabase_enabled())
 
     try:
         if tool_name == "memory_set":
@@ -612,8 +768,15 @@ def onboarding_agent_tool():
             # Apply patch safely
             disc_patch = (patch.get("discovery") or {}) if isinstance(patch.get("discovery"), dict) else {}
             for k, v in disc_patch.items():
-                if k in st["discovery"] and isinstance(v, str):
+                if k not in st["discovery"]:
+                    continue
+                if isinstance(v, str):
                     st["discovery"][k] = v.strip()
+                elif v is not None:
+                    if isinstance(v, (dict, list)):
+                        st["discovery"][k] = json.dumps(v, ensure_ascii=False)
+                    else:
+                        st["discovery"][k] = str(v)
 
             if isinstance(patch.get("last_question_id"), str):
                 st["last_question_id"] = patch["last_question_id"].strip()
@@ -624,15 +787,24 @@ def onboarding_agent_tool():
             if note:
                 _append_note(st, note)
 
-            _STATE_BY_USER[user_id] = st
-            _save_state_to_disk(user_id, st)
+            missing = _missing_keys(st)
+            if not missing:
+                st["phase"] = "complete"
+            elif st.get("phase") != "discovery":
+                st["phase"] = "discovery"
+
+            _save_state(user_id, st)
 
             nxt = _next_question(st)
+            completed = _completed_questions_count(st)
             output = {
                 "ok": True,
                 "saved": True,
-                "missing_keys": _missing_keys(st),
+                "missing_keys": missing,
+                "is_complete": len(missing) == 0,
                 "next_question": (nxt or {}).get("id"),
+                "completed_questions": completed,
+                "total_questions": len(QUESTIONS),
             }
             return jok({"output": output})
 
@@ -654,7 +826,7 @@ def onboarding_agent_tool():
                     f"- Experience (regret): {disc.get('experience_regret') or '—'}",
                     f"- Fund fit: {disc.get('fund_fit_alignment') or '—'}",
                     f"- Allocation mechanics preference: {disc.get('allocation_mechanics_depth') or '—'}",
-                    f"- Contact: {disc.get('contact_full_name') or '—'} / {disc.get('contact_email') or '—'} / {disc.get('contact_country') or '—'}",
+                    f"- Country: {disc.get('contact_country') or '—'}",
                 ])
             else:
                 summary = (
@@ -665,6 +837,7 @@ def onboarding_agent_tool():
                     f"Your comfortable allocation over 12–24 months is {disc.get('allocation_comfort_12_24m') or '—'}. "
                     f"Your proud decision: {disc.get('experience_proud') or '—'}; and what you’d redo: {disc.get('experience_regret') or '—'}. "
                     f"Fund fit: {disc.get('fund_fit_alignment') or '—'}. "
+                    f"Country: {disc.get('contact_country') or '—'}. "
                     "If you want, we can refine any part."
                 )
 
@@ -691,8 +864,8 @@ def onboarding_agent_reset():
     data = request.get_json(force=True, silent=True) or {}
     user_id = (data.get("user_id") or _get_user_id()).strip()
 
-    if user_id in _STATE_BY_USER:
-        del _STATE_BY_USER[user_id]
+    _cache_clear(user_id)
+    _delete_state_from_supabase(user_id)
 
     # Remove disk state too
     try:
@@ -703,5 +876,5 @@ def onboarding_agent_reset():
         pass
 
     st = _get_or_init_state(user_id)
-    _save_state_to_disk(user_id, st)
+    _save_state(user_id, st)
     return jok({"ok": True, "user_id": user_id, "state_compact": _compact_state(st)})
