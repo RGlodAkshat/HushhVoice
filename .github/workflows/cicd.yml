@@ -1,58 +1,211 @@
-name: Slack Notifier
+# .github/workflows/cicd.yml
+name: cicd-workflow (CI/CD + Slack)
 
 on:
-  workflow_run:
-    types: [completed]
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review, edited, closed]
 
-# Notify the configured Slack channel whenever any workflow run completes.
-# This workflow skips sending a notification for itself to avoid an infinite loop.
+  issues:
+    types: [opened, edited, reopened, closed, labeled, unlabeled, assigned, unassigned, milestoned, demilestoned]
+  issue_comment:
+    types: [created, edited, deleted]
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  notify:
-    # don't run the notifier when the completed workflow was this notifier
-    if: ${{ github.event.workflow_run.name != 'Slack Notifier' }}
+  # -------------------------------
+  # CI build (push + PR)
+  # -------------------------------
+  build:
+    name: Build (Node)
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
 
     steps:
-      - name: Send Slack notification
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          SLACK_CHANNEL: "#hushh-voice-website-github-check-ins"
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+          cache: "npm"
+
+      # Fix for: "Cannot find native binding" (@napi-rs/simple-git optional dependency bug)
+      - name: Install dependencies (clean, deterministic)
         run: |
-          python3 - <<'PY'
-          import os, json, urllib.request
+          rm -rf node_modules package-lock.json
+          npm install --legacy-peer-deps
 
-          event_path = os.environ.get('GITHUB_EVENT_PATH')
-          if not event_path:
-              print('No GITHUB_EVENT_PATH available; nothing to do.')
-              raise SystemExit(0)
+      # - name: Build
+      #   run: npm run build
+      #   env:
+      #     CI: true
+      #     # Make CI closer to a "minimal env" to catch missing NEXT_PUBLIC_* locally too
+      #     NEXT_TELEMETRY_DISABLED: 1
 
-          with open(event_path) as f:
-              ev = json.load(f)
+  slack_ci_success:
+    name: Slack notify (CI success)
+    needs: [build]
+    if: needs.build.result == 'success' && (github.event_name == 'push' || github.event_name == 'pull_request')
+    runs-on: ubuntu-latest
 
-          wr = ev.get('workflow_run', {})
-          conclusion = wr.get('conclusion') or 'unknown'
-          name = wr.get('name') or ev.get('workflow', {}).get('name') or 'Workflow'
-          url = wr.get('html_url') or ''
-          run_number = wr.get('run_number') or ''
-          repo = os.environ.get('GITHUB_REPOSITORY')
-          actor = (wr.get('actor') or {}).get('login') or ev.get('sender', {}).get('login') or os.environ.get('GITHUB_ACTOR')
-          branch = wr.get('head_branch') or ''
-          commit_msg = (wr.get('head_commit') or {}).get('message', '')
+    steps:
+      - name: Send Slack message (CI success)
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "channel": "#hushh-tech-github-check-ins",
+              "text": "✅ CI Success: ${{ github.repository }}",
+              "blocks": [
+                { "type": "header", "text": { "type": "plain_text", "text": "✅ CI Success", "emoji": true } },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Repo:*\n${{ github.repository }}" },
+                    { "type": "mrkdwn", "text": "*Event:*\n${{ github.event_name }}" },
+                    { "type": "mrkdwn", "text": "*Actor:*\n${{ github.actor }}" },
+                    { "type": "mrkdwn", "text": "*Branch/Ref:*\n${{ github.ref_name }}" }
+                  ]
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Workflow:*\n${{ github.workflow }}" },
+                    { "type": "mrkdwn", "text": "*Run:*\n#${{ github.run_number }}" },
+                    { "type": "mrkdwn", "text": "*SHA:*\n`${{ github.sha }}`" },
+                    { "type": "mrkdwn", "text": "*Run URL:*\n${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" }
+                  ]
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "${{ github.event_name == 'pull_request' && format('*PR:* <{0}|#{1} {2}>', github.event.pull_request.html_url, github.event.pull_request.number, github.event.pull_request.title) || format('*Commit:* <{0}/{1}/commit/{2}|View commit>', github.server_url, github.repository, github.sha) }}"
+                  }
+                }
+              ]
+            }
 
-          status_emoji = {'success':'✅','failure':'❌','cancelled':'⚠️'}.get(conclusion, '')
+  # -------------------------------
+  # PR lifecycle notifications (immediate)
+  # -------------------------------
+  slack_pr_event:
+    name: Slack notify (PR event)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Slack message (PR)
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "channel": "#hushh-tech-github-check-ins",
+              "text": "🔔 PR Update: ${{ github.repository }} #${{ github.event.pull_request.number }}",
+              "blocks": [
+                { "type": "header", "text": { "type": "plain_text", "text": "🔔 Pull Request Update", "emoji": true } },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Repo:*\n${{ github.repository }}" },
+                    { "type": "mrkdwn", "text": "*Action:*\n${{ github.event.action }}" },
+                    { "type": "mrkdwn", "text": "*PR:*\n#${{ github.event.pull_request.number }}" },
+                    { "type": "mrkdwn", "text": "*Author:*\n${{ github.event.pull_request.user.login }}" }
+                  ]
+                },
+                {
+                  "type": "section",
+                  "text": { "type": "mrkdwn", "text": "*Title:* ${{ github.event.pull_request.title }}\n*URL:* ${{ github.event.pull_request.html_url }}" }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Base → Head:*\n${{ github.event.pull_request.base.ref }} → ${{ github.event.pull_request.head.ref }}" },
+                    { "type": "mrkdwn", "text": "*Merged:*\n${{ github.event.pull_request.merged }}" }
+                  ]
+                }
+              ]
+            }
 
-          text = (
-              f"{status_emoji} *{repo}* — Workflow *{name}* (#{run_number}) finished with *{conclusion}*\\n"
-              f"• Branch: `{branch}`\\n"
-              f"• Triggered by: `{actor}`\\n"
-              f"• Commit: {commit_msg}\\n"
-              f"<{url}|View workflow run>"
-          )
+  # -------------------------------
+  # Issue lifecycle notifications
+  # -------------------------------
+  slack_issue_event:
+    name: Slack notify (Issue event)
+    if: github.event_name == 'issues'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Slack message (Issue)
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "channel": "#hushh-voice-website-github-check-ins",
+              "text": "🧩 Issue Update: ${{ github.repository }} #${{ github.event.issue.number }}",
+              "blocks": [
+                { "type": "header", "text": { "type": "plain_text", "text": "🧩 Issue Update", "emoji": true } },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Repo:*\n${{ github.repository }}" },
+                    { "type": "mrkdwn", "text": "*Action:*\n${{ github.event.action }}" },
+                    { "type": "mrkdwn", "text": "*Issue:*\n#${{ github.event.issue.number }}" },
+                    { "type": "mrkdwn", "text": "*State:*\n${{ github.event.issue.state }}" }
+                  ]
+                },
+                {
+                  "type": "section",
+                  "text": { "type": "mrkdwn", "text": "*Title:* ${{ github.event.issue.title }}\n*URL:* ${{ github.event.issue.html_url }}\n*Author:* ${{ github.event.issue.user.login }}" }
+                }
+              ]
+            }
 
-          payload = {"channel": os.environ.get('SLACK_CHANNEL'), "text": text, "mrkdwn": True}
-          data = json.dumps(payload).encode('utf-8')
-          req = urllib.request.Request(os.environ['SLACK_WEBHOOK_URL'], data=data, headers={'Content-Type': 'application/json'})
-          with urllib.request.urlopen(req) as resp:
-              print('Slack webhook response code:', resp.getcode())
-          PY
+  slack_issue_comment_event:
+    name: Slack notify (Issue comment)
+    if: github.event_name == 'issue_comment'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Slack message (Issue Comment)
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "channel": "#hushh-tech-github-check-ins",
+              "text": "💬 Issue Comment: ${{ github.repository }} #${{ github.event.issue.number }}",
+              "blocks": [
+                { "type": "header", "text": { "type": "plain_text", "text": "💬 Issue Comment", "emoji": true } },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Repo:*\n${{ github.repository }}" },
+                    { "type": "mrkdwn", "text": "*Action:*\n${{ github.event.action }}" },
+                    { "type": "mrkdwn", "text": "*Issue:*\n#${{ github.event.issue.number }}" },
+                    { "type": "mrkdwn", "text": "*Commenter:*\n${{ github.event.comment.user.login }}" }
+                  ]
+                },
+                {
+                  "type": "section",
+                  "text": { "type": "mrkdwn", "text": "*Issue:* <${{ github.event.issue.html_url }}|${{ github.event.issue.title }}>\n*Comment URL:* ${{ github.event.comment.html_url }}" }
+                }
+              ]
+            }
