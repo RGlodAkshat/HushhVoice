@@ -28,13 +28,13 @@ import re
 import time
 from datetime import datetime
 from threading import Lock
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
 import requests
 from flask import request
 
-from app_context import OPENAI_API_KEY, app, client, log
+from app_context import OPENAI_API_KEY, OPENAI_SUMMARY_MODEL, app, client, log
 from json_helpers import jerror, jok
 
 
@@ -71,6 +71,160 @@ FUND_CONTEXT = {
     "unit_explainer": "Units determine your allocation across share classes; you can invest in multiple classes.",
 }
 
+
+# ============================================================
+# ALL AGENT PROMPTS LIVE HERE (single place)
+# ============================================================
+
+AGENT_PROMPTS: Dict[str, Any] = {
+    "intro_text": (
+        "Hey — I’m Kai, your AI-powered financial agent at Hushh. "
+        "My job is to understand you — how you think about money, risk, and long-term decisions — "
+        "so I can actually be useful when it comes to financial advice and opportunities. "
+        "Right now, I’m onboarding investors who are exploring HushhTech, "
+        "so this is just a short, thoughtful conversation to get to know you properly. "
+        "It’ll take about 3–4 minutes, you can answer in your own words, "
+        "and you’re always free to skip anything you’re not comfortable sharing. "
+        "Ready?"
+    ),
+    "close_text": (
+        "That’s enough for now. Would you like me to summarize what I’ve understood, "
+        "or should we continue later?"
+    ),
+    "complete_text": "Thanks — I have everything I need. I’ll show you a concise summary now.",
+    "system_instructions_template": """
+You are Kai — a human, thoughtful investor AI from Hushh.
+
+This is NOT a form. This is a get-to-know-you conversation that happens to collect
+a few important investing signals.
+
+────────────────────────────────
+HOW YOU SHOULD SOUND
+────────────────────────────────
+- Calm, curious, sharp, and human
+- React briefly to interesting answers
+- You may explore RELATED thoughts (background, motivations, stories)
+- These side discussions must feel natural and short
+- Always guide the conversation back to the main question
+
+────────────────────────────────
+RESPONSE SHAPE (AFTER EACH ANSWER)
+────────────────────────────────
+- Always respond in three parts:
+  1) Acknowledge the user (1 short line)
+  2) Reflect an insight (1–2 calm sentences, human tone)
+  3) Gentle transition + ask the next question (ONE question only)
+- Never rapid-fire questions or sound like a form
+- Keep it brief; no long explanations
+
+────────────────────────────────
+NON-NEGOTIABLE RULES
+────────────────────────────────
+- You MUST collect answers for the fixed discovery questions Q1–Q8
+- You MUST ask them in order
+- You MUST ask only ONE core question at a time
+- You MUST NOT invent or infer answers
+- When an answer clearly satisfies the current question, store it using memory_set
+- You MUST NOT introduce new data fields
+
+────────────────────────────────
+QUESTION INTENT (DO NOT CHANGE)
+────────────────────────────────
+Q1: Net worth & asset breakdown
+Q2: Investor identity / style
+Q3: Capital intent (growth vs preservation etc.)
+Q4: Comfortable allocation in next 12–24 months
+Q5: Investment proud of + investment regret
+Q6: Alignment with Hushh’s philosophy
+Q7: Allocation class understanding / preference
+Q8: Country of residence
+
+You may rephrase questions conversationally, but the intent must remain identical.
+
+────────────────────────────────
+INTRO (FIRST MESSAGE ONLY)
+────────────────────────────────
+"Hey, I’m Kai from Hushh. This isn’t a checklist — it’s a short investor conversation.
+I’ll ask a few questions, we can riff a bit where it helps, and I’ll put together a clean
+picture of how you think about investing. Ready?"
+
+────────────────────────────────
+WHEN FINISHED
+────────────────────────────────
+"That’s everything I need. I’ve got a solid understanding of your investing mindset now."
+
+────────────────────────────────
+STATE (INTERNAL — DO NOT SHOW USER)
+────────────────────────────────
+NextQuestionId = {next_question_id_json}
+Memory = {memory_json}
+""".strip(),
+    "questions": [
+        {
+            "id": "Q1",
+            "keys": ["net_worth", "asset_breakdown"],
+            "text": (
+                "Before we talk about investing, help me understand your financial base. "
+                "Roughly speaking, what does your net worth look like, and how is it split — "
+                "for example between cash, equities, businesses, real estate, or anything else?"
+            ),
+        },
+        {
+            "id": "Q2",
+            "keys": ["investor_identity"],
+            "text": (
+                "How do you see yourself as an investor? "
+                "For example — long-term value holder, opportunistic, conservative, aggressive, or something else?"
+            ),
+        },
+        {
+            "id": "Q3",
+            "keys": ["capital_intent"],
+            "text": (
+                "When you invest, what’s your usual intent? "
+                "Are you trying to grow wealth steadily, preserve capital, or meaningfully compound over the long term, "
+                "even with short-term volatility?"
+            ),
+        },
+        {
+            "id": "Q4",
+            "keys": ["allocation_comfort_12_24m"],
+            "text": (
+                "Thinking realistically — not aspirationally — how much capital would you be comfortable allocating "
+                "to an opportunity like this over the next 12–24 months?"
+            ),
+        },
+        {
+            "id": "Q5",
+            "keys": ["experience_proud", "experience_regret"],
+            "text": "What’s one investment decision you’re proud of — and one you’d handle differently today?",
+        },
+        {
+            "id": "Q6",
+            "keys": ["fund_fit_alignment"],
+            "text": (
+                "Based on what you’ve shared, here’s how Hushh Fund A works in one sentence: "
+                "It’s an AI-driven, long-term value strategy designed to compound capital responsibly over time. "
+                "Does that generally align with how you like to invest?"
+            ),
+        },
+        {
+            "id": "Q7",
+            "keys": ["allocation_mechanics_depth"],
+            "text": (
+                "We offer three allocation tiers — Class A, B, and C — mainly differing by unit size and access level. "
+                "Would you like me to walk you through them, or do you already have a preference?"
+            ),
+        },
+        {
+            "id": "Q8",
+            "keys": ["contact_country"],
+            "text": "To wrap up, which country are you based in?",
+        },
+    ],
+}
+
+
 # ============================================================
 # Strict flow (Intro + Q1..Q8)
 # ============================================================
@@ -90,91 +244,8 @@ DISCOVERY_KEYS = [
 ]
 
 # Ordered questions (the model must not deviate)
-QUESTIONS: List[Dict[str, Any]] = [
-    {
-        "id": "Q1",
-        "keys": ["net_worth", "asset_breakdown"],
-        "text": (
-            "Before we talk about investing, help me understand your financial base. "
-            "Roughly speaking, what does your net worth look like, and how is it split — "
-            "for example between cash, equities, businesses, real estate, or anything else?"
-        ),
-    },
-    {
-        "id": "Q2",
-        "keys": ["investor_identity"],
-        "text": (
-            "How do you see yourself as an investor? "
-            "For example — long-term value holder, opportunistic, conservative, aggressive, or something else?"
-        ),
-    },
-    {
-        "id": "Q3",
-        "keys": ["capital_intent"],
-        "text": (
-            "When you invest, what’s your usual intent? "
-            "Are you trying to grow wealth steadily, preserve capital, or meaningfully compound over the long term, "
-            "even with short-term volatility?"
-        ),
-    },
-    {
-        "id": "Q4",
-        "keys": ["allocation_comfort_12_24m"],
-        "text": (
-            "Thinking realistically — not aspirationally — how much capital would you be comfortable allocating "
-            "to an opportunity like this over the next 12–24 months?"
-        ),
-    },
-    {
-        "id": "Q5",
-        "keys": ["experience_proud", "experience_regret"],
-        "text": (
-            "What’s one investment decision you’re proud of — and one you’d handle differently today?"
-        ),
-    },
-    {
-        "id": "Q6",
-        "keys": ["fund_fit_alignment"],
-        "text": (
-            "Based on what you’ve shared, here’s how Hushh Fund A works in one sentence: "
-            "It’s an AI-driven, long-term value strategy designed to compound capital responsibly over time. "
-            "Does that generally align with how you like to invest?"
-        ),
-    },
-    {
-        "id": "Q7",
-        "keys": ["allocation_mechanics_depth"],
-        "text": (
-            "We offer three allocation tiers — Class A, B, and C — mainly differing by unit size and access level. "
-            "Would you like me to walk you through them, or do you already have a preference?"
-        ),
-    },
-    {
-        "id": "Q8",
-        "keys": ["contact_country"],
-        "text": (
-            "To wrap up, which country are you based in?"
-        ),
-    },
-]
+QUESTIONS: List[Dict[str, Any]] = AGENT_PROMPTS["questions"]
 
-CLOSE_TEXT = (
-    "That’s enough for now. Would you like me to summarize what I’ve understood, "
-    "or should we continue later?"
-)
-
-COMPLETE_TEXT = (
-    "Thanks — I have everything I need. I’ll show you a concise summary now."
-)
-
-INTRO_TEXT = (
-    "Hi, I’m Kai, your financial AI assistant at Hushh. "
-    "I help investors think clearly about capital allocation — not just fill forms. "
-    "This will take about 3–4 minutes, you can answer freely, and you can skip anything you’re not comfortable with. "
-    "I won’t ask for any bank or sensitive details. "
-    "Quick context: Hushh Fund A is our AI-powered multi-strategy alpha fund — "
-    f"“{FUND_CONTEXT['tagline']}”. Ready?"
-)
 
 # ============================================================
 # State + persistence
@@ -190,9 +261,10 @@ DEFAULT_STATE: Dict[str, Any] = {
     "last_question_id": None,        # "Q1"... "Q8"
     "discovery": {k: None for k in DISCOVERY_KEYS},
     "notes": [],
+    "last_answer": {"question_id": None, "patch": {}, "ts": None},
 }
 
-# In-memory cache (dev). Supabase (if enabled) is source of truth across restarts.
+# In-memory cache (dev). Local disk is source of truth during onboarding.
 _STATE_BY_USER: Dict[str, Dict[str, Any]] = {}
 _STATE_BY_USER_TS: Dict[str, float] = {}
 _STATE_LOCK = Lock()
@@ -304,9 +376,7 @@ def _load_state(user_id: str) -> Optional[Dict[str, Any]]:
     if cached is not None:
         return cached
 
-    st = _load_state_from_supabase(user_id) if _supabase_enabled() else None
-    if st is None:
-        st = _load_state_from_disk(user_id)
+    st = _load_state_from_disk(user_id)
     if st is not None:
         _cache_set(user_id, st)
     return st
@@ -343,8 +413,6 @@ def _save_state_to_disk(user_id: str, st: Dict[str, Any]) -> None:
 
 def _save_state(user_id: str, st: Dict[str, Any]) -> None:
     _cache_set(user_id, st)
-    if _save_state_to_supabase(user_id, st):
-        return
     _save_state_to_disk(user_id, st)
 
 
@@ -388,6 +456,7 @@ def _get_or_init_state(user_id: str) -> Dict[str, Any]:
     for k in DISCOVERY_KEYS:
         st["discovery"].setdefault(k, None)
     st.setdefault("notes", [])
+    st.setdefault("last_answer", {"question_id": None, "patch": {}, "ts": None})
     st.setdefault("fund_context", FUND_CONTEXT)
     st.setdefault("preferred_language", "English")
     st.setdefault("phase", "discovery")
@@ -425,7 +494,6 @@ def _next_question(st: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
     missing = set(_missing_keys(st))
     for q in QUESTIONS:
-        # If any key in this question is missing, ask it.
         if any(k in missing for k in q["keys"]):
             return q
     return None
@@ -437,6 +505,15 @@ def _append_note(st: Dict[str, Any], note: str) -> None:
         return
     st.setdefault("notes", [])
     st["notes"].append({"ts": _now_iso(), "note": note})
+
+
+def _completed_questions_count(st: Dict[str, Any]) -> int:
+    disc = st.get("discovery", {})
+    count = 0
+    for q in QUESTIONS:
+        if all(_is_filled(disc.get(k)) for k in q["keys"]):
+            count += 1
+    return count
 
 
 def _compact_state(st: Dict[str, Any]) -> Dict[str, Any]:
@@ -460,13 +537,61 @@ def _compact_state(st: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _completed_questions_count(st: Dict[str, Any]) -> int:
-    disc = st.get("discovery", {})
-    count = 0
-    for q in QUESTIONS:
-        if all(_is_filled(disc.get(k)) for k in q["keys"]):
-            count += 1
-    return count
+def _highlight_fallback_summary(patch: Dict[str, Any]) -> str:
+    labels = [
+        ("net_worth", "Net worth"),
+        ("asset_breakdown", "Asset breakdown"),
+        ("investor_identity", "Investor identity"),
+        ("capital_intent", "Capital intent"),
+        ("allocation_comfort_12_24m", "Allocation comfort"),
+        ("experience_proud", "Proud decision"),
+        ("experience_regret", "Regret decision"),
+        ("fund_fit_alignment", "Fund fit"),
+        ("allocation_mechanics_depth", "Allocation mechanics"),
+        ("contact_country", "Country"),
+    ]
+    parts = []
+    for key, label in labels:
+        val = (patch.get(key) or "").strip()
+        if not val:
+            continue
+        parts.append(f"{label}: {val}")
+        if len(parts) == 2:
+            break
+    if not parts:
+        return ""
+    return "Kai noted: " + " • ".join(parts)
+
+
+def _highlight_summary(last_answer: Dict[str, Any]) -> str:
+    patch = (last_answer or {}).get("patch") or {}
+    fallback = _highlight_fallback_summary(patch)
+    if not client:
+        return fallback
+    try:
+        if not patch:
+            return ""
+        system = (
+            "You are Kai's note-taker. Write 1–2 short, human sentences for a UI card called 'Kai Notes'. "
+            "Summarize ONLY the most recent answer and add a light, thoughtful reflection. "
+            "Be warm and conversational, under 240 characters, no bullets. "
+            "If data is sparse, be brief and do not invent."
+        )
+        user = json.dumps(patch, ensure_ascii=False)
+        resp = client.chat.completions.create(
+            model=OPENAI_SUMMARY_MODEL,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": f"Latest answer data:\n{user}"},
+            ],
+            temperature=0.2,
+            max_tokens=120,
+        )
+        content = (resp.choices[0].message.content or "").strip()
+        return content or fallback
+    except Exception:
+        log.exception("Highlight summary generation failed")
+        return fallback
 
 
 # ============================================================
@@ -508,9 +633,7 @@ TOOLS_SCHEMA = [
         "parameters": {
             "type": "object",
             "additionalProperties": False,
-            "properties": {
-                "style": {"type": "string", "description": "short|bullet", "default": "short"}
-            },
+            "properties": {"style": {"type": "string", "description": "short|bullet|highlight", "default": "short"}},
         },
     },
     {
@@ -527,77 +650,15 @@ TOOLS_SCHEMA = [
 # ============================================================
 
 def build_kai_instructions(st: Dict[str, Any]) -> str:
-    fund = st["fund_context"]
-    fund_lines = [
-        f"{fund['fund_name']} — {fund['tagline']}",
-        fund["one_liner"],
-        "Share classes:",
-    ]
-    for c in fund["share_classes"]:
-        fund_lines.append(f"- Class {c['class']} ({c['name']}): ${c['unit_price_usd']:,}/unit — {c['notes']}")
-    fund_lines.append(fund["unit_explainer"])
-
     compact = _compact_state(st)
     next_q = _next_question(st)
     next_id = next_q["id"] if next_q else None
 
-    # IMPORTANT: This prompt prohibits extra questions.
-    # Kai must ask only the next missing question and then stop.
-    return f"""
-You are Kai — a premium financial AI assistant for Hushh.
-
-LANGUAGE:
-- Speak English by default.
-- Do not switch languages unless the user explicitly asks.
-
-SAFETY:
-- Never ask for bank details, account numbers, routing numbers, SSN, or sensitive IDs.
-- If user offers sensitive info, politely say you don’t need it and return to the flow.
-
-STYLE:
-- Sound human: calm, confident, unhurried.
-- Ask ONE question at a time.
-- Encourage longer answers.
-- Do not overwhelm the user.
-- Light compliment is allowed (brief, genuine, not excessive).
-
-STRICT FLOW:
-You are ONLY allowed to ask the following questions in order (no extra questions):
-Q1..Q8. Do not ask any other questions.
-Do not ask for city/zip/phone/etc. Do not ask for any other fields.
-
-INTRO (use once at the beginning or when user returns after a break):
-"{INTRO_TEXT}"
-
-QUESTIONS (verbatim):
-Q1: "{QUESTIONS[0]['text']}"
-Q2: "{QUESTIONS[1]['text']}"
-Q3: "{QUESTIONS[2]['text']}"
-Q4: "{QUESTIONS[3]['text']}"
-Q5: "{QUESTIONS[4]['text']}"
-Q6: "{QUESTIONS[5]['text']}"
-Q7: "{QUESTIONS[6]['text']}"
-Q8: "{QUESTIONS[7]['text']}"
-
-WHEN COMPLETE:
-"{COMPLETE_TEXT}"
-
-HOW TO USE MEMORY (MANDATORY):
-- Your job is to ask ONLY the next missing question and then wait.
-- After user answers, immediately call:
-  memory_set(patch={{discovery:{{...}}, last_question_id:"<Q#>", phase:"discovery"}}, note:"optional")
-- Fill only the relevant keys for that question. Do not fabricate.
-- If all required fields are filled, say the completion line and stop (no further questions).
-- If user says "continue later", do NOT ask new questions.
-- If user asks for summary, call memory_review(style="short") and read it out, then stop.
-
-FUND CONTEXT (consistent, short; only mention when needed or at Q6):
-{chr(10).join(fund_lines)}
-
-PINNED STATE (authoritative):
-NextQuestionId = {json.dumps(next_id)}
-Memory = {json.dumps(compact, ensure_ascii=False)}
-""".strip()
+    template: str = AGENT_PROMPTS["system_instructions_template"]
+    return template.format(
+        next_question_id_json=json.dumps(next_id),
+        memory_json=json.dumps(compact, ensure_ascii=False),
+    ).strip()
 
 
 def build_kickoff(st: Dict[str, Any]) -> Dict[str, Any]:
@@ -611,7 +672,7 @@ def build_kickoff(st: Dict[str, Any]) -> Dict[str, Any]:
         # All collected -> short completion line only
         instructions = (
             "We’re already good. Say this exactly and stop: "
-            f"“{COMPLETE_TEXT}”"
+            f"“{AGENT_PROMPTS['complete_text']}”"
         )
         return {
             "type": "response.create",
@@ -620,14 +681,16 @@ def build_kickoff(st: Dict[str, Any]) -> Dict[str, Any]:
 
     if next_q["id"] == "Q1":
         instructions = (
-            f"Say this intro (briefly): “{INTRO_TEXT}” "
-            f"Then ask Q1 exactly: “{QUESTIONS[0]['text']}” "
-            "Then wait."
+            f"Say this intro (briefly): “{AGENT_PROMPTS['intro_text']}” "
+            f"Optionally add one friendly transition sentence, "
+            f"then ask Q1 with the same intent as: “{QUESTIONS[0]['text']}”. "
+            "Ask only ONE question. Then wait."
         )
     else:
         instructions = (
-            f"Ask {next_q['id']} exactly: “{next_q['text']}” "
-            "Then wait."
+            "Briefly acknowledge the user in one natural sentence if appropriate, "
+            f"then ask {next_q['id']} with the same intent as: “{next_q['text']}”. "
+            "Ask only ONE question. Then wait."
         )
 
     return {
@@ -674,7 +737,12 @@ def onboarding_agent_config():
         "total_questions": len(QUESTIONS),
         "kickoff": build_kickoff(st),
     }
-    log.info("[Onboarding] config ok user_id=%s missing=%s next=%s", user_id, _missing_keys(st), cfg.get("next_question"))
+    log.info(
+        "[Onboarding] config ok user_id=%s missing=%s next=%s",
+        user_id,
+        _missing_keys(st),
+        cfg.get("next_question"),
+    )
     return jok(cfg)
 
 
@@ -787,6 +855,13 @@ def onboarding_agent_tool():
             if note:
                 _append_note(st, note)
 
+            if disc_patch:
+                st["last_answer"] = {
+                    "question_id": st.get("last_question_id"),
+                    "patch": {k: str(v).strip() for k, v in disc_patch.items()},
+                    "ts": _now_iso(),
+                }
+
             missing = _missing_keys(st)
             if not missing:
                 st["phase"] = "complete"
@@ -803,6 +878,8 @@ def onboarding_agent_tool():
                 "missing_keys": missing,
                 "is_complete": len(missing) == 0,
                 "next_question": (nxt or {}).get("id"),
+                "next_question_text": (nxt or {}).get("text"),
+                "last_question_id": st.get("last_question_id"),
                 "completed_questions": completed,
                 "total_questions": len(QUESTIONS),
             }
@@ -814,6 +891,10 @@ def onboarding_agent_tool():
         if tool_name == "memory_review":
             style = (args.get("style") or "short").strip()
             disc = st.get("discovery", {})
+
+            if style == "highlight":
+                summary = _highlight_summary(st.get("last_answer", {}))
+                return jok({"output": {"summary": summary, "missing_keys": _missing_keys(st), "next_question": (_next_question(st) or {}).get("id")}})
 
             if style == "bullet":
                 summary = "\n".join([
@@ -856,6 +937,32 @@ def onboarding_agent_state():
     user_id = _get_user_id()
     st = _get_or_init_state(user_id)
     return jok({"user_id": user_id, "state": st, "missing_keys": _missing_keys(st), "next_question": (_next_question(st) or {}).get("id")})
+
+
+@app.post("/onboarding/agent/sync")
+def onboarding_agent_sync():
+    """
+    Sync onboarding state to Supabase after the summary is shown.
+    Body:
+      { user_id: "...", state?: {...} }
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    user_id = (data.get("user_id") or _get_user_id()).strip()
+    incoming_state = data.get("state")
+
+    if not _supabase_enabled():
+        return jerror("Supabase not configured", 500)
+
+    if isinstance(incoming_state, dict) and incoming_state:
+        st = incoming_state
+        st.setdefault("updated_at", _now_iso())
+    else:
+        st = _load_state(user_id) or _get_or_init_state(user_id)
+
+    ok = _save_state_to_supabase(user_id, st)
+    if not ok:
+        return jerror("Supabase sync failed", 500)
+    return jok({"ok": True})
 
 
 @app.post("/onboarding/agent/reset")

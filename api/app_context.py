@@ -35,6 +35,7 @@ DEBUG = os.getenv("DEBUG", "true").lower() in ("1", "true", "yes")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
 EMBED_MODEL = os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-small")
+OPENAI_SUMMARY_MODEL = os.getenv("OPENAI_SUMMARY_MODEL", "gpt-4.1-nano")
 
 # On serverless platforms, code dir is read-only. Use /tmp for writes.
 DEFAULT_MEMORY = "/tmp/hushh_memory.json"

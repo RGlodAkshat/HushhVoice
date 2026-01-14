@@ -20,6 +20,7 @@ import routes_tts  # noqa: F401
 import routes_onboarding_agent  # noqa: F401
 import routes_identity_enrich  # noqa: F401
 import routes_profile  # noqa: F401
+import routes_account  # noqa: F401
 
 
 # =========================
