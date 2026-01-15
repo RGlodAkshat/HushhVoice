@@ -4,7 +4,7 @@ from typing import Any, Dict, Optional
 
 from flask import request
 
-from app_context import VERIFY_GOOGLE_TOKEN, google_requests, id_token, log
+from config import VERIFY_GOOGLE_TOKEN, google_requests, id_token, log
 
 
 # =========================

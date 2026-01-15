@@ -2,26 +2,29 @@ from __future__ import annotations
 
 import uuid
 
-from flask import request
+from flask import Blueprint, request
 
-from app_context import app, client, log
-from auth_helpers import get_access_token_from_request
-from calendar_helpers import calendar_answer_core, calendar_plan_core
-from google_helpers import _google_post
-from json_helpers import jerror, jok
-from openai_helpers import (
+from clients.google_client import _google_post
+from clients.openai_client import (
     DEFAULT_SYSTEM,
     _append_task_block,
     _chat_complete,
     _coerce_messages,
     _ensure_system_first,
+    client,
 )
+from config import log
+from services.calendar_service import calendar_answer_core, calendar_plan_core
+from utils.auth_helpers import get_access_token_from_request
+from utils.json_helpers import jerror, jok
+
+calendar_bp = Blueprint("calendar", __name__)
 
 
 # =========================
 # Calendar Answer (web)
 # =========================
-@app.post("/calendar/answer")
+@calendar_bp.post("/calendar/answer")
 def calendar_answer():
     """
     Summarize or answer questions about the user's calendar across ALL calendars.
@@ -69,7 +72,7 @@ def calendar_answer():
 # =========================
 # Calendar Plan (web)
 # =========================
-@app.post("/calendar/plan")
+@calendar_bp.post("/calendar/plan")
 def calendar_plan():
     """
     Draft (and optionally create) a calendar event from natural language.

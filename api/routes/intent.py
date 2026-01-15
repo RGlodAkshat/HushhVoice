@@ -1,15 +1,18 @@
 from __future__ import annotations
 
-from app_context import app, log
-from intent_helpers import classify_intent_text
-from json_helpers import jok
-from flask import request
+from flask import Blueprint, request
+
+from config import log
+from services.intent_service import classify_intent_text
+from utils.json_helpers import jok
+
+intent_bp = Blueprint("intent", __name__)
 
 
 # =========================
 # Intent Classifier (web)
 # =========================
-@app.post("/intent/classify")
+@intent_bp.post("/intent/classify")
 def intent_classify_route():
     data = request.get_json(force=True, silent=True) or {}
     user_text = (data.get("query") or "").strip()

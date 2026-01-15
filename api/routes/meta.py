@@ -1,13 +1,18 @@
 from __future__ import annotations
 
-from app_context import APP_NAME, APP_VERSION, VERIFY_GOOGLE_TOKEN, app, client
-from json_helpers import jok
+from flask import Blueprint
+
+from clients.openai_client import client
+from config import APP_NAME, APP_VERSION, VERIFY_GOOGLE_TOKEN
+from utils.json_helpers import jok
+
+meta_bp = Blueprint("meta", __name__)
 
 
 # =========================
 # Meta / Health
 # =========================
-@app.get("/health")
+@meta_bp.get("/health")
 def health():
     return jok(
         {
@@ -19,6 +24,6 @@ def health():
     )
 
 
-@app.get("/version")
+@meta_bp.get("/version")
 def version():
     return jok({"name": APP_NAME, "version": APP_VERSION})

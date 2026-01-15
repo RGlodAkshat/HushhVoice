@@ -3,15 +3,16 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any, Dict, List, Optional
 
-from app_context import client, log
-from google_helpers import _google_get, _google_post, _iso
-from openai_helpers import (
+from clients.google_client import _google_get, _google_post, _iso
+from clients.openai_client import (
     DEFAULT_SYSTEM,
     _append_task_block,
     _chat_complete,
     _coerce_messages,
     _ensure_system_first,
+    client,
 )
+from config import log
 
 
 # =========================

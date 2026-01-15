@@ -1,20 +1,22 @@
 from __future__ import annotations
 
-from flask import request
+from flask import Blueprint, request
 
-from app_context import app, client, log
-from auth_helpers import get_access_token_from_request
-from json_helpers import jerror, jok
-from mail_helpers import answer_from_mail
-from openai_helpers import DEFAULT_SYSTEM, _coerce_messages, _ensure_system_first
+from clients.openai_client import DEFAULT_SYSTEM, _coerce_messages, _ensure_system_first, client
+from config import log
+from services.mail_service import answer_from_mail
+from utils.auth_helpers import get_access_token_from_request
+from utils.json_helpers import jerror, jok
 from agents.email_assistant.gmail_fetcher import fetch_recent_emails, send_email
 from agents.email_assistant.reply_helper import generate_reply_from_inbox
+
+mail_bp = Blueprint("mail", __name__)
 
 
 # =========================
 # Mail Q&A (web)
 # =========================
-@app.post("/mailgpt/answer")
+@mail_bp.post("/mailgpt/answer")
 def mailgpt_answer():
     """
     One-shot: fetch last N emails and answer a natural-language question about them.
@@ -74,7 +76,7 @@ def mailgpt_answer():
 # =========================
 # Mail Reply (web)
 # =========================
-@app.post("/mailgpt/reply")
+@mail_bp.post("/mailgpt/reply")
 def mailgpt_reply():
     """
     Draft (and optionally send) a reply based on recent emails + instruction.

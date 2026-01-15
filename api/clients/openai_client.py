@@ -1,8 +1,14 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
-from app_context import OPENAI_MODEL, client
+from openai import OpenAI
+
+from config import OPENAI_API_KEY, OPENAI_MODEL
+
+client: Optional[OpenAI] = None
+if OPENAI_API_KEY:
+    client = OpenAI(api_key=OPENAI_API_KEY)
 
 # =========================
 # OpenAI message assembly (short-term memory support)

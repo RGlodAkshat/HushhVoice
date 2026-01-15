@@ -4,22 +4,24 @@ import json
 import os
 import uuid
 
-from flask import request
+from flask import Blueprint, request
 
-from app_context import app, log
-from calendar_helpers import calendar_answer_core, calendar_plan_core
-from google_helpers import _google_post, _normalize_event_datetime
-from intent_helpers import classify_intent_text
-from json_helpers import jerror, jok
-from mail_helpers import answer_from_mail, draft_reply_from_mail
-from openai_helpers import DEFAULT_SYSTEM, _chat_complete
+from clients.google_client import _google_post, _normalize_event_datetime
+from clients.openai_client import DEFAULT_SYSTEM, _chat_complete
+from config import log
+from services.calendar_service import calendar_answer_core, calendar_plan_core
+from services.intent_service import classify_intent_text
+from services.mail_service import answer_from_mail, draft_reply_from_mail
+from utils.json_helpers import jerror, jok
 from agents.email_assistant.gmail_fetcher import send_email
+
+siri_bp = Blueprint("siri", __name__)
 
 
 # =========================
 # Siri: /siri/ask (iOS + Shortcuts)
 # =========================
-@app.post("/siri/ask")
+@siri_bp.post("/siri/ask")
 def siri_ask():
     """
     Entry point for iOS App / App Intent "AskHushhVoice".

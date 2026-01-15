@@ -4,10 +4,13 @@ import json
 import re
 from typing import Any, Dict, List
 
-from flask import request
+from flask import Blueprint, request
 
-from app_context import OPENAI_MODEL, app, client, log
-from json_helpers import jerror, jok
+from clients.openai_client import client
+from config import OPENAI_MODEL, log
+from utils.json_helpers import jerror, jok
+
+identity_enrich_bp = Blueprint("identity_enrich", __name__)
 
 
 def _basic_name_parts(full_name: str) -> Dict[str, str]:
@@ -56,7 +59,7 @@ def _offline_enrich(full_name: str, phone: str, email: str) -> Dict[str, Any]:
     }
 
 
-@app.post("/identity/enrich")
+@identity_enrich_bp.post("/identity/enrich")
 def identity_enrich():
     """
     Takes full_name, phone, email and returns a structured, non-lookup enrichment

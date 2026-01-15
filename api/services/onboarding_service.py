@@ -1,41 +1,25 @@
-# routes_onboarding_agent.py
-# Flask routes module for Kai investor discovery (STRICT 8-question flow)
-#
-# ✅ Only asks: Intro + Q1..Q8 (no extra onboarding fields)
-# ✅ Persistent memory (disk) so user can leave mid-way and resume
-# ✅ Pinned state + next-question selection so it never “drifts”
-# ✅ Tool relay endpoint for iOS: /onboarding/agent/tool
-#
-# Endpoints:
-# - GET  /onboarding/agent/config?user_id=...
-# - POST /onboarding/agent/token
-# - POST /onboarding/agent/tool
-# - GET  /onboarding/agent/state?user_id=...        (debug)
-# - POST /onboarding/agent/reset                    (debug)
-#
-# Expected response envelope: jok(...) => { ok: true, data: ... }
-#
-# NOTE:
-# - iOS should call /config on app open and after each memory_set tool call.
-# - iOS should forward tool calls from Realtime (DataChannel) to /tool,
-#   then send function_call_output back to the model.
-
 from __future__ import annotations
 
 import json
 import os
-import re
-import time
-from datetime import datetime
-from threading import Lock
 from typing import Any, Dict, List, Optional
-from urllib.parse import quote
 
 import requests
-from flask import request
 
-from app_context import OPENAI_API_KEY, OPENAI_SUMMARY_MODEL, app, client, log
-from json_helpers import jerror, jok
+from clients.openai_client import client
+from config import OPENAI_API_KEY, OPENAI_SUMMARY_MODEL, log
+from storage.onboarding_state_store import (
+    _cache_clear,
+    _cache_set,
+    _delete_state_from_disk,
+    _delete_state_from_supabase,
+    _load_state,
+    _now_iso,
+    _save_state,
+    _save_state_to_supabase,
+    _supabase_enabled,
+)
+from utils.errors import ServiceError
 
 
 # ============================================================
@@ -264,209 +248,9 @@ DEFAULT_STATE: Dict[str, Any] = {
     "last_answer": {"question_id": None, "patch": {}, "ts": None},
 }
 
-# In-memory cache (dev). Local disk is source of truth during onboarding.
-_STATE_BY_USER: Dict[str, Dict[str, Any]] = {}
-_STATE_BY_USER_TS: Dict[str, float] = {}
-_STATE_LOCK = Lock()
-
-SUPABASE_URL = os.environ.get("HUSHHVOICE_URL_SUPABASE", "").rstrip("/")
-SUPABASE_SERVICE_ROLE_KEY = os.environ.get("HUSHHVOICE_SERVICE_ROLE_KEY_SUPABASE", "")
-SUPABASE_ONBOARDING_TABLE = os.environ.get("HUSHHVOICE_ONBOARDING_TABLE_SUPABASE", "kai_onboarding_state")
-SUPABASE_ONBOARDING_STATE_COLUMN = os.environ.get("HUSHHVOICE_ONBOARDING_STATE_COLUMN", "state")
-SUPABASE_TIMEOUT_SECS = float(os.environ.get("HUSHHVOICE_SUPABASE_TIMEOUT_SECS", "5"))
-STATE_CACHE_TTL_SECS = int(os.environ.get("HUSHH_ONBOARDING_CACHE_TTL", "5"))
-
-
-def _now_iso() -> str:
-    return datetime.now().isoformat()
-
-
-def _state_dir() -> str:
-    base = os.environ.get("HUSHH_ONBOARDING_STATE_DIR", "/tmp/hushh_onboarding_state")
-    os.makedirs(base, exist_ok=True)
-    return base
-
-
-def _safe_user_id(user_id: str) -> str:
-    return re.sub(r"[^a-zA-Z0-9._-]", "_", user_id or "dev-anon")
-
-
-def _state_path(user_id: str) -> str:
-    return os.path.join(_state_dir(), f"{_safe_user_id(user_id)}.json")
-
-
-def _supabase_enabled() -> bool:
-    return bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY)
-
-
-def _supabase_table_url() -> str:
-    return f"{SUPABASE_URL}/rest/v1/{SUPABASE_ONBOARDING_TABLE}"
-
-
-def _supabase_headers() -> Dict[str, str]:
-    return {
-        "apikey": SUPABASE_SERVICE_ROLE_KEY,
-        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
-        "Content-Type": "application/json",
-    }
-
-
-def _cache_get(user_id: str) -> Optional[Dict[str, Any]]:
-    if STATE_CACHE_TTL_SECS <= 0:
-        return None
-    now = time.time()
-    with _STATE_LOCK:
-        ts = _STATE_BY_USER_TS.get(user_id)
-        if not ts:
-            return None
-        if now - ts > STATE_CACHE_TTL_SECS:
-            _STATE_BY_USER.pop(user_id, None)
-            _STATE_BY_USER_TS.pop(user_id, None)
-            return None
-        return _STATE_BY_USER.get(user_id)
-
-
-def _cache_set(user_id: str, st: Dict[str, Any]) -> None:
-    if STATE_CACHE_TTL_SECS <= 0:
-        return
-    with _STATE_LOCK:
-        _STATE_BY_USER[user_id] = st
-        _STATE_BY_USER_TS[user_id] = time.time()
-
-
-def _cache_clear(user_id: str) -> None:
-    with _STATE_LOCK:
-        _STATE_BY_USER.pop(user_id, None)
-        _STATE_BY_USER_TS.pop(user_id, None)
-
-
-def _load_state_from_supabase(user_id: str) -> Optional[Dict[str, Any]]:
-    if not _supabase_enabled():
-        return None
-    url = f"{_supabase_table_url()}?user_id=eq.{quote(user_id, safe='')}&select={SUPABASE_ONBOARDING_STATE_COLUMN}"
-    try:
-        resp = requests.get(url, headers=_supabase_headers(), timeout=SUPABASE_TIMEOUT_SECS)
-        if resp.status_code >= 400:
-            log.warning("Supabase load failed: %s", resp.text)
-            return None
-        rows = resp.json() or []
-        if not rows:
-            return None
-        state = rows[0].get(SUPABASE_ONBOARDING_STATE_COLUMN)
-        return state if isinstance(state, dict) else None
-    except Exception:
-        log.exception("Failed to load state from Supabase")
-        return None
-
-
-def _load_state_from_disk(user_id: str) -> Optional[Dict[str, Any]]:
-    path = _state_path(user_id)
-    if not os.path.exists(path):
-        return None
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        log.exception("Failed to load state from disk")
-        return None
-
-
-def _load_state(user_id: str) -> Optional[Dict[str, Any]]:
-    cached = _cache_get(user_id)
-    if cached is not None:
-        return cached
-
-    st = _load_state_from_disk(user_id)
-    if st is not None:
-        _cache_set(user_id, st)
-    return st
-
-
-def _save_state_to_supabase(user_id: str, st: Dict[str, Any]) -> bool:
-    if not _supabase_enabled():
-        log.info("[Onboarding] Supabase disabled; skipping save user_id=%s", user_id)
-        return False
-    url = _supabase_table_url()
-    headers = _supabase_headers()
-    headers["Prefer"] = "resolution=merge-duplicates,return=minimal"
-    payload = {"user_id": user_id, SUPABASE_ONBOARDING_STATE_COLUMN: st}
-    try:
-        resp = requests.post(url, headers=headers, json=payload, timeout=SUPABASE_TIMEOUT_SECS)
-        if resp.status_code >= 400:
-            log.warning("Supabase save failed: status=%s body=%s", resp.status_code, resp.text)
-            return False
-        log.info("[Onboarding] Supabase save ok user_id=%s table=%s", user_id, SUPABASE_ONBOARDING_TABLE)
-        return True
-    except Exception:
-        log.exception("Failed to save state to Supabase")
-        return False
-
-
-def _save_state_to_disk(user_id: str, st: Dict[str, Any]) -> None:
-    path = _state_path(user_id)
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(st, f, ensure_ascii=False, indent=2)
-    except Exception:
-        log.exception("Failed to save state to disk")
-
-
-def _save_state(user_id: str, st: Dict[str, Any]) -> None:
-    _cache_set(user_id, st)
-    _save_state_to_disk(user_id, st)
-
-
-def _delete_state_from_supabase(user_id: str) -> None:
-    if not _supabase_enabled():
-        return
-    url = f"{_supabase_table_url()}?user_id=eq.{quote(user_id, safe='')}"
-    headers = _supabase_headers()
-    headers["Prefer"] = "return=minimal"
-    try:
-        resp = requests.delete(url, headers=headers, timeout=SUPABASE_TIMEOUT_SECS)
-        if resp.status_code >= 400:
-            log.warning("Supabase delete failed: %s", resp.text)
-    except Exception:
-        log.exception("Failed to delete state from Supabase")
-
 
 def _deep_copy(obj: Any) -> Any:
     return json.loads(json.dumps(obj))
-
-
-def _get_user_id() -> str:
-    uid = request.args.get("user_id") or request.headers.get("X-User-Id")
-    if uid:
-        return uid.strip()
-    data = request.get_json(force=True, silent=True) or {}
-    uid = data.get("user_id")
-    return (uid or "dev-anon").strip()
-
-
-def _get_or_init_state(user_id: str) -> Dict[str, Any]:
-    st = _load_state(user_id)
-    if not st:
-        st = _deep_copy(DEFAULT_STATE)
-        st["created_at"] = _now_iso()
-    st.setdefault("created_at", _now_iso())
-    st["updated_at"] = _now_iso()
-
-    # Ensure all keys exist (for forward compatibility)
-    st.setdefault("discovery", {})
-    for k in DISCOVERY_KEYS:
-        st["discovery"].setdefault(k, None)
-    st.setdefault("notes", [])
-    st.setdefault("last_answer", {"question_id": None, "patch": {}, "ts": None})
-    st.setdefault("fund_context", FUND_CONTEXT)
-    st.setdefault("preferred_language", "English")
-    st.setdefault("phase", "discovery")
-    st.setdefault("last_question_id", None)
-
-    if not _missing_keys(st):
-        st["phase"] = "complete"
-
-    _cache_set(user_id, st)
-    return st
 
 
 def _is_filled(v: Any) -> bool:
@@ -699,14 +483,37 @@ def build_kickoff(st: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _get_or_init_state(user_id: str) -> Dict[str, Any]:
+    st = _load_state(user_id)
+    if not st:
+        st = _deep_copy(DEFAULT_STATE)
+        st["created_at"] = _now_iso()
+    st.setdefault("created_at", _now_iso())
+    st["updated_at"] = _now_iso()
+
+    # Ensure all keys exist (for forward compatibility)
+    st.setdefault("discovery", {})
+    for k in DISCOVERY_KEYS:
+        st["discovery"].setdefault(k, None)
+    st.setdefault("notes", [])
+    st.setdefault("last_answer", {"question_id": None, "patch": {}, "ts": None})
+    st.setdefault("fund_context", FUND_CONTEXT)
+    st.setdefault("preferred_language", "English")
+    st.setdefault("phase", "discovery")
+    st.setdefault("last_question_id", None)
+
+    if not _missing_keys(st):
+        st["phase"] = "complete"
+
+    _cache_set(user_id, st)
+    return st
+
+
 # ============================================================
-# Routes
+# Service API
 # ============================================================
 
-@app.get("/onboarding/agent/config")
-def onboarding_agent_config():
-    user_id = _get_user_id()
-    log.info("[Onboarding] config user_id=%s", user_id)
+def get_config(user_id: str) -> Dict[str, Any]:
     st = _get_or_init_state(user_id)
     st["updated_at"] = _now_iso()
     _save_state(user_id, st)
@@ -743,20 +550,10 @@ def onboarding_agent_config():
         _missing_keys(st),
         cfg.get("next_question"),
     )
-    return jok(cfg)
+    return cfg
 
 
-@app.post("/onboarding/agent/token")
-def onboarding_agent_token():
-    """
-    Creates ephemeral client_secret for WebRTC Realtime.
-    iOS uses it as Bearer token to POST SDP to /v1/realtime/calls.
-    """
-    data = request.get_json(force=True, silent=True) or {}
-    model = (data.get("model") or REALTIME_MODEL).strip()
-    ttl_seconds = data.get("ttl_seconds")
-    log.info("[Onboarding] token request model=%s ttl=%s", model, ttl_seconds)
-
+def create_realtime_token(model: str, ttl_seconds: Optional[int]) -> Dict[str, Any]:
     # SDK path if available
     try:
         if client and hasattr(client, "realtime") and hasattr(client.realtime, "sessions"):
@@ -766,9 +563,11 @@ def onboarding_agent_token():
             sess = client.realtime.sessions.create(**kwargs)
             secret = getattr(getattr(sess, "client_secret", None), "value", None)
             if not secret:
-                return jerror("Missing client_secret in realtime session response.", 500)
+                raise ServiceError("Missing client_secret in realtime session response.", 500)
             log.info("[Onboarding] token ok model=%s sdk=1", model)
-            return jok({"client_secret": secret, "model": model})
+            return {"client_secret": secret, "model": model}
+    except ServiceError:
+        raise
     except Exception:
         log.exception("SDK realtime.sessions.create failed; falling back to REST")
 
@@ -790,168 +589,134 @@ def onboarding_agent_token():
             timeout=20,
         )
         if resp.status_code >= 400:
-            return jerror(resp.text, resp.status_code)
+            raise ServiceError(resp.text, resp.status_code)
 
         out = resp.json() or {}
         secret = (out.get("client_secret") or {}).get("value")
         if not secret:
-            return jerror("Missing client_secret in realtime session response.", 500)
+            raise ServiceError("Missing client_secret in realtime session response.", 500)
         log.info("[Onboarding] token ok model=%s sdk=0", model)
-        return jok({"client_secret": secret, "model": model})
+        return {"client_secret": secret, "model": model}
 
+    except ServiceError:
+        raise
     except Exception as e:
         log.exception("realtime session creation failed")
-        return jerror(str(e), 500)
+        raise ServiceError(str(e), 500) from e
 
 
-@app.post("/onboarding/agent/tool")
-def onboarding_agent_tool():
-    """
-    iOS forwards tool calls here.
-    Body:
-      { user_id: "...", tool_name: "...", arguments: {...} }
-
-    Returns:
-      jok({ output: {...} })
-    """
-    data = request.get_json(force=True, silent=True) or {}
-    user_id = (data.get("user_id") or _get_user_id()).strip()
-    tool_name = (data.get("tool_name") or "").strip()
-    args = data.get("arguments") or {}
-
-    if not tool_name:
-        return jerror("Missing tool_name", 400)
-
+def handle_tool(user_id: str, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     st = _get_or_init_state(user_id)
     st["updated_at"] = _now_iso()
     log.info("[Onboarding] tool=%s user_id=%s supabase=%s", tool_name, user_id, _supabase_enabled())
 
-    try:
-        if tool_name == "memory_set":
-            patch = args.get("patch") or {}
-            note = (args.get("note") or "").strip()
-            if not isinstance(patch, dict):
-                return jerror("patch must be an object", 400)
+    if tool_name == "memory_set":
+        patch = args.get("patch") or {}
+        note = (args.get("note") or "").strip()
+        if not isinstance(patch, dict):
+            raise ServiceError("patch must be an object", 400)
 
-            # Apply patch safely
-            disc_patch = (patch.get("discovery") or {}) if isinstance(patch.get("discovery"), dict) else {}
-            for k, v in disc_patch.items():
-                if k not in st["discovery"]:
-                    continue
-                if isinstance(v, str):
-                    st["discovery"][k] = v.strip()
-                elif v is not None:
-                    if isinstance(v, (dict, list)):
-                        st["discovery"][k] = json.dumps(v, ensure_ascii=False)
-                    else:
-                        st["discovery"][k] = str(v)
+        # Apply patch safely
+        disc_patch = (patch.get("discovery") or {}) if isinstance(patch.get("discovery"), dict) else {}
+        for k, v in disc_patch.items():
+            if k not in st["discovery"]:
+                continue
+            if isinstance(v, str):
+                st["discovery"][k] = v.strip()
+            elif v is not None:
+                if isinstance(v, (dict, list)):
+                    st["discovery"][k] = json.dumps(v, ensure_ascii=False)
+                else:
+                    st["discovery"][k] = str(v)
 
-            if isinstance(patch.get("last_question_id"), str):
-                st["last_question_id"] = patch["last_question_id"].strip()
+        if isinstance(patch.get("last_question_id"), str):
+            st["last_question_id"] = patch["last_question_id"].strip()
 
-            if isinstance(patch.get("phase"), str):
-                st["phase"] = patch["phase"].strip()
+        if isinstance(patch.get("phase"), str):
+            st["phase"] = patch["phase"].strip()
 
-            if note:
-                _append_note(st, note)
+        if note:
+            _append_note(st, note)
 
-            if disc_patch:
-                st["last_answer"] = {
-                    "question_id": st.get("last_question_id"),
-                    "patch": {k: str(v).strip() for k, v in disc_patch.items()},
-                    "ts": _now_iso(),
-                }
-
-            missing = _missing_keys(st)
-            if not missing:
-                st["phase"] = "complete"
-            elif st.get("phase") != "discovery":
-                st["phase"] = "discovery"
-
-            _save_state(user_id, st)
-
-            nxt = _next_question(st)
-            completed = _completed_questions_count(st)
-            output = {
-                "ok": True,
-                "saved": True,
-                "missing_keys": missing,
-                "is_complete": len(missing) == 0,
-                "next_question": (nxt or {}).get("id"),
-                "next_question_text": (nxt or {}).get("text"),
-                "last_question_id": st.get("last_question_id"),
-                "completed_questions": completed,
-                "total_questions": len(QUESTIONS),
+        if disc_patch:
+            st["last_answer"] = {
+                "question_id": st.get("last_question_id"),
+                "patch": {k: str(v).strip() for k, v in disc_patch.items()},
+                "ts": _now_iso(),
             }
-            return jok({"output": output})
 
-        if tool_name == "memory_get":
-            return jok({"output": _compact_state(st)})
+        missing = _missing_keys(st)
+        if not missing:
+            st["phase"] = "complete"
+        elif st.get("phase") != "discovery":
+            st["phase"] = "discovery"
 
-        if tool_name == "memory_review":
-            style = (args.get("style") or "short").strip()
-            disc = st.get("discovery", {})
+        _save_state(user_id, st)
 
-            if style == "highlight":
-                summary = _highlight_summary(st.get("last_answer", {}))
-                return jok({"output": {"summary": summary, "missing_keys": _missing_keys(st), "next_question": (_next_question(st) or {}).get("id")}})
+        nxt = _next_question(st)
+        completed = _completed_questions_count(st)
+        return {
+            "ok": True,
+            "saved": True,
+            "missing_keys": missing,
+            "is_complete": len(missing) == 0,
+            "next_question": (nxt or {}).get("id"),
+            "next_question_text": (nxt or {}).get("text"),
+            "last_question_id": st.get("last_question_id"),
+            "completed_questions": completed,
+            "total_questions": len(QUESTIONS),
+        }
 
-            if style == "bullet":
-                summary = "\n".join([
-                    f"- Net worth: {disc.get('net_worth') or '—'}",
-                    f"- Asset breakdown: {disc.get('asset_breakdown') or '—'}",
-                    f"- Investor identity: {disc.get('investor_identity') or '—'}",
-                    f"- Capital intent: {disc.get('capital_intent') or '—'}",
-                    f"- Allocation comfort (12–24m): {disc.get('allocation_comfort_12_24m') or '—'}",
-                    f"- Experience (proud): {disc.get('experience_proud') or '—'}",
-                    f"- Experience (regret): {disc.get('experience_regret') or '—'}",
-                    f"- Fund fit: {disc.get('fund_fit_alignment') or '—'}",
-                    f"- Allocation mechanics preference: {disc.get('allocation_mechanics_depth') or '—'}",
-                    f"- Country: {disc.get('contact_country') or '—'}",
-                ])
-            else:
-                summary = (
-                    "Here’s what I’ve understood so far: "
-                    f"your net worth and asset mix is {disc.get('net_worth') or 'not shared yet'} "
-                    f"with {disc.get('asset_breakdown') or 'no breakdown yet'}. "
-                    f"You see yourself as {disc.get('investor_identity') or '—'}, and your intent is {disc.get('capital_intent') or '—'}. "
-                    f"Your comfortable allocation over 12–24 months is {disc.get('allocation_comfort_12_24m') or '—'}. "
-                    f"Your proud decision: {disc.get('experience_proud') or '—'}; and what you’d redo: {disc.get('experience_regret') or '—'}. "
-                    f"Fund fit: {disc.get('fund_fit_alignment') or '—'}. "
-                    f"Country: {disc.get('contact_country') or '—'}. "
-                    "If you want, we can refine any part."
-                )
+    if tool_name == "memory_get":
+        return _compact_state(st)
 
-            return jok({"output": {"summary": summary, "missing_keys": _missing_keys(st), "next_question": (_next_question(st) or {}).get("id")}})
+    if tool_name == "memory_review":
+        style = (args.get("style") or "short").strip()
+        disc = st.get("discovery", {})
 
-        return jerror(f"Unknown tool_name: {tool_name}", 400)
+        if style == "highlight":
+            summary = _highlight_summary(st.get("last_answer", {}))
+            return {"summary": summary, "missing_keys": _missing_keys(st), "next_question": (_next_question(st) or {}).get("id")}
 
-    except Exception as e:
-        log.exception("onboarding_agent_tool failed")
-        return jerror(str(e), 500)
+        if style == "bullet":
+            summary = "\n".join([
+                f"- Net worth: {disc.get('net_worth') or '—'}",
+                f"- Asset breakdown: {disc.get('asset_breakdown') or '—'}",
+                f"- Investor identity: {disc.get('investor_identity') or '—'}",
+                f"- Capital intent: {disc.get('capital_intent') or '—'}",
+                f"- Allocation comfort (12–24m): {disc.get('allocation_comfort_12_24m') or '—'}",
+                f"- Experience (proud): {disc.get('experience_proud') or '—'}",
+                f"- Experience (regret): {disc.get('experience_regret') or '—'}",
+                f"- Fund fit: {disc.get('fund_fit_alignment') or '—'}",
+                f"- Allocation mechanics preference: {disc.get('allocation_mechanics_depth') or '—'}",
+                f"- Country: {disc.get('contact_country') or '—'}",
+            ])
+        else:
+            summary = (
+                "Here’s what I’ve understood so far: "
+                f"your net worth and asset mix is {disc.get('net_worth') or 'not shared yet'} "
+                f"with {disc.get('asset_breakdown') or 'no breakdown yet'}. "
+                f"You see yourself as {disc.get('investor_identity') or '—'}, and your intent is {disc.get('capital_intent') or '—'}. "
+                f"Your comfortable allocation over 12–24 months is {disc.get('allocation_comfort_12_24m') or '—'}. "
+                f"Your proud decision: {disc.get('experience_proud') or '—'}; and what you’d redo: {disc.get('experience_regret') or '—'}. "
+                f"Fund fit: {disc.get('fund_fit_alignment') or '—'}. "
+                f"Country: {disc.get('contact_country') or '—'}. "
+                "If you want, we can refine any part."
+            )
+
+        return {"summary": summary, "missing_keys": _missing_keys(st), "next_question": (_next_question(st) or {}).get("id")}
+
+    raise ServiceError(f"Unknown tool_name: {tool_name}", 400)
 
 
-@app.get("/onboarding/agent/state")
-def onboarding_agent_state():
-    """Debug endpoint to inspect state."""
-    user_id = _get_user_id()
+def get_state_debug(user_id: str) -> Dict[str, Any]:
     st = _get_or_init_state(user_id)
-    return jok({"user_id": user_id, "state": st, "missing_keys": _missing_keys(st), "next_question": (_next_question(st) or {}).get("id")})
+    return {"user_id": user_id, "state": st, "missing_keys": _missing_keys(st), "next_question": (_next_question(st) or {}).get("id")}
 
 
-@app.post("/onboarding/agent/sync")
-def onboarding_agent_sync():
-    """
-    Sync onboarding state to Supabase after the summary is shown.
-    Body:
-      { user_id: "...", state?: {...} }
-    """
-    data = request.get_json(force=True, silent=True) or {}
-    user_id = (data.get("user_id") or _get_user_id()).strip()
-    incoming_state = data.get("state")
-
+def sync_state(user_id: str, incoming_state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if not _supabase_enabled():
-        return jerror("Supabase not configured", 500)
+        raise ServiceError("Supabase not configured", 500)
 
     if isinstance(incoming_state, dict) and incoming_state:
         st = incoming_state
@@ -961,27 +726,15 @@ def onboarding_agent_sync():
 
     ok = _save_state_to_supabase(user_id, st)
     if not ok:
-        return jerror("Supabase sync failed", 500)
-    return jok({"ok": True})
+        raise ServiceError("Supabase sync failed", 500)
+    return {"ok": True}
 
 
-@app.post("/onboarding/agent/reset")
-def onboarding_agent_reset():
-    """Dev helper: reset state for a user."""
-    data = request.get_json(force=True, silent=True) or {}
-    user_id = (data.get("user_id") or _get_user_id()).strip()
-
+def reset_state(user_id: str) -> Dict[str, Any]:
     _cache_clear(user_id)
     _delete_state_from_supabase(user_id)
-
-    # Remove disk state too
-    try:
-        path = _state_path(user_id)
-        if os.path.exists(path):
-            os.remove(path)
-    except Exception:
-        pass
+    _delete_state_from_disk(user_id, log_errors=False)
 
     st = _get_or_init_state(user_id)
     _save_state(user_id, st)
-    return jok({"ok": True, "user_id": user_id, "state_compact": _compact_state(st)})
+    return {"ok": True, "user_id": user_id, "state_compact": _compact_state(st)}

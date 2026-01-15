@@ -2,18 +2,18 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from app_context import client, log
-from agents.email_assistant.gmail_fetcher import fetch_recent_emails, send_email
-from agents.email_assistant.reply_helper import generate_reply_from_inbox
-from agents.email_assistant.helper_functions import build_email_context, trim_email_fields
-
-from openai_helpers import (
+from clients.openai_client import (
     DEFAULT_SYSTEM,
     _append_task_block,
     _chat_complete,
     _coerce_messages,
     _ensure_system_first,
+    client,
 )
+from config import log
+from agents.email_assistant.gmail_fetcher import fetch_recent_emails, send_email
+from agents.email_assistant.reply_helper import generate_reply_from_inbox
+from agents.email_assistant.helper_functions import build_email_context, trim_email_fields
 
 
 # =========================

@@ -5,7 +5,7 @@ from typing import Optional
 
 import requests
 
-from app_context import GOOGLE_CAL_BASE
+from config import GOOGLE_CAL_BASE
 
 
 # =========================

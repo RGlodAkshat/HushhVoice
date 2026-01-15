@@ -3,12 +3,8 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from typing import Optional
 
 from dotenv import load_dotenv
-from flask import Flask
-from flask_cors import CORS
-from openai import OpenAI
 
 # -------------------------------------------------------------------
 # Path setup so we can import from backend/agents/*
@@ -37,6 +33,8 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
 EMBED_MODEL = os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-small")
 OPENAI_SUMMARY_MODEL = os.getenv("OPENAI_SUMMARY_MODEL", "gpt-4.1-nano")
 
+FLASK_SECRET = os.getenv("FLASK_SECRET", "hushh_secret_🔥")
+
 # On serverless platforms, code dir is read-only. Use /tmp for writes.
 DEFAULT_MEMORY = "/tmp/hushh_memory.json"
 MEMORY_PATH = os.getenv("MEMORY_PATH", DEFAULT_MEMORY)
@@ -47,16 +45,8 @@ except Exception:
     # Ignore dir creation errors; we'll no-op writes later if needed.
     pass
 
-app = Flask(__name__)
-app.secret_key = os.getenv("FLASK_SECRET", "hushh_secret_🔥")
-CORS(app, supports_credentials=True)
-
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("hushhvoice")
-
-client: Optional[OpenAI] = None
-if OPENAI_API_KEY:
-    client = OpenAI(api_key=OPENAI_API_KEY)
 
 # === Optional: Google ID token verification (independent from Gmail access token) ===
 VERIFY_GOOGLE_TOKEN = os.getenv("VERIFY_GOOGLE_TOKEN", "false").lower() in ("1", "true", "yes")

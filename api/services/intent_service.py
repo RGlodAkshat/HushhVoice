@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from app_context import client, log
+from clients.openai_client import client
+from config import log
 
 
 # =========================

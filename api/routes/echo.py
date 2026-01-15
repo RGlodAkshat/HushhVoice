@@ -3,18 +3,26 @@ from __future__ import annotations
 import json
 import time
 
-from flask import Response, request
+from flask import Blueprint, Response, request
 
-from app_context import OPENAI_MODEL, app, client, log
-from auth_helpers import verify_google_token_if_enabled
-from json_helpers import jerror, jok
-from openai_helpers import DEFAULT_SYSTEM, _chat_complete, _coerce_messages, _ensure_system_first
+from clients.openai_client import (
+    DEFAULT_SYSTEM,
+    _chat_complete,
+    _coerce_messages,
+    _ensure_system_first,
+    client,
+)
+from config import OPENAI_MODEL, log
+from utils.auth_helpers import verify_google_token_if_enabled
+from utils.json_helpers import jerror, jok
+
+echo_bp = Blueprint("echo", __name__)
 
 
 # =========================
 # Chat: /echo (+ streaming)
 # =========================
-@app.post("/echo")
+@echo_bp.post("/echo")
 def echo():
     data = request.get_json(force=True, silent=True) or {}
     incoming_messages = _coerce_messages(data.get("messages"))
@@ -40,7 +48,7 @@ def echo():
         return jerror(str(e), 500)
 
 
-@app.post("/echo/stream")
+@echo_bp.post("/echo/stream")
 def echo_stream():
     data = request.get_json(force=True, silent=True) or {}
     incoming_messages = _coerce_messages(data.get("messages"))
