@@ -5,7 +5,7 @@
 - iOS app: `HushhVoice_v2/HushhVoice/HushhVoice/*.swift`
 - Optional web UI: `HushhVoice/frontend/*`
 
-This document captures the current (baseline) architecture from code and defines a target architecture aligned with TOGAF viewpoints and 12-factor principles.
+This document captures the current architecture from code and recent updates and defines a target architecture aligned with TOGAF viewpoints and 12-factor principles.
 
 ## Business architecture (TOGAF)
 ### Stakeholders
@@ -19,7 +19,10 @@ This document captures the current (baseline) architecture from code and defines
 - Gmail reading, summarization, and reply drafting/sending
 - Google Calendar Q and A and scheduling
 - Investor onboarding flow (Kai agent)
+- Kai Notes (lightweight, per-answer summaries)
+- Summary review and edit
 - User profile capture and lightweight identity enrichment
+- Account deletion and local state reset
 
 ### Policies and constraints
 - Consent-first, privacy-first messaging
@@ -28,13 +31,13 @@ This document captures the current (baseline) architecture from code and defines
 
 ## Application architecture (TOGAF)
 ### Logical components
-- iOS app (SwiftUI): chat UI, Siri Shortcuts, TTS playback, Google OAuth PKCE, Apple Sign In to Supabase, onboarding voice with OpenAI Realtime (WebRTC)
+- iOS app (SwiftUI): chat UI, Siri Shortcuts, TTS playback, Google OAuth PKCE, Apple Sign In to Supabase, onboarding voice with OpenAI Realtime (WebRTC), onboarding resume from Supabase, premium onboarding UI (intro steps, Meet Kai, Summary)
 - Backend API (Flask): REST endpoints for chat, mail, calendar, onboarding, profile, identity enrichment, TTS
 - Agent modules: Gmail fetcher, reply drafting helper, (placeholder) health assistant
 - Optional web UI: basic web client for chat and testing
 - Third-party services: OpenAI (chat, TTS, realtime), Google APIs (Gmail/Calendar), Supabase (profile and onboarding state), Apple Sign In
 
-### Core backend routes (baseline)
+### Core backend routes (current)
 - `GET /health`, `GET /version`
 - `POST /echo`, `POST /echo/stream`
 - `POST /intent/classify`
@@ -43,28 +46,57 @@ This document captures the current (baseline) architecture from code and defines
 - `POST /calendar/answer`, `POST /calendar/plan`
 - `POST /tts`
 - `GET /profile`, `POST /profile`
-- `GET /onboarding/agent/config`, `POST /onboarding/agent/token`, `POST /onboarding/agent/tool`, `GET /onboarding/agent/state`, `POST /onboarding/agent/reset`
+- `POST /account/delete`
+- `GET /onboarding/agent/config`, `POST /onboarding/agent/token`, `POST /onboarding/agent/tool`, `POST /onboarding/agent/sync`, `GET /onboarding/agent/state`, `POST /onboarding/agent/reset`
 - `POST /identity/enrich`
+
+### iOS onboarding flow (current)
+- Stages: `loading` → `profile` → `intro1` → `intro2` → `meetKai` → `voice` → `summary` → `actions`
+- On app open, iOS performs a single startup check:
+  - `GET /profile?user_id=...`
+  - `GET /onboarding/agent/config?user_id=...`
+- Routing rules:
+  - Profile incomplete → `profile`
+  - Profile complete + onboarding incomplete → `intro1/intro2` (if not done) or `voice` (resume)
+  - Profile complete + onboarding complete → exit onboarding (main app)
+- Voice resume uses `next_question_text` and `missing_keys` from config and preserves local state while reconnecting WebRTC.
+- “Go to HushhTech” routes to Summary first if onboarding complete; otherwise resumes onboarding.
+
+### iOS UI highlights (current)
+- Auth gate: logo orb with breathing animation, primary Google sign-in, Apple secondary, guest tertiary; trust copy without bank language
+- Intro steps (1–4): premium glass cards, progress dots, logo orb on Steps 2 and 4
+- Voice onboarding: Kai orb + waveform driven by mic level, muted state preserved, notes card capped + scrollable
+- Kai Notes: newest entry animates only once, auto-scroll pinned during animation, notes stored per-answer
+- Summary: hero grid with edit icon, highlight pills, accordion sections with confidence pills, sticky CTA + “Open HushhTech”
 
 ## Data architecture (TOGAF)
 ### Data domains
 - User identity: Apple Sign In user id and Supabase user id
 - OAuth tokens: Google access and refresh tokens (stored on device)
 - Conversation history: stored on device (UserDefaults)
-- Onboarding state: in-memory cache, optional Supabase table, disk fallback in `/tmp`
+- Onboarding state: local persistent cache (UserDefaults JSON per user id) with Supabase as source of truth on app open; backend falls back to `/tmp` if Supabase is not configured
 - Profile data: Supabase table storing name, phone, email
+- Supabase tables: `kai_onboarding_state`, `kai_user_profile`
+- Kai Notes: stored locally as an ordered list and optionally sourced from Supabase `notes_tail` via config
 - Email and calendar data: transient, fetched on demand
 
 ### Data flows and storage
 - iOS app stores Google tokens in App Group UserDefaults for reuse across app and Shortcuts
 - Backend fetches Gmail and Calendar data using short-lived access tokens passed by the client
-- Onboarding state is cached in memory and persisted to Supabase if configured, else to `/tmp`
+- Onboarding state is cached in memory, persisted locally in UserDefaults, and overwritten on app open by Supabase config when available
+- Account deletion triggers `/account/delete` to remove Supabase rows and clears local onboarding/profile state on device
 - No server-side long-term chat memory is currently persisted
+
+### Local persistence and sync (iOS)
+- `KaiLocalState` is encoded to JSON and stored in UserDefaults with key prefix `hushh_kai_onboarding_state_v1_{user_id}`
+- Sync pending is tracked via a UserDefaults flag `hushh_kai_onboarding_sync_pending_{user_id}`
+- On config fetch, iOS overwrites local discovery, counts, next question, and optionally notes from `notes_tail`
+- Supabase sync is triggered after Summary is shown; UI does not block on sync
 
 ## Technology architecture (TOGAF)
 ### Platforms and frameworks
 - Backend: Python, Flask, OpenAI SDK, requests, googleapiclient, Supabase REST
-- iOS: SwiftUI, AppIntents, AVFoundation, ASWebAuthenticationSession, Supabase SDK, LiveKitWebRTC, Orb
+- iOS: SwiftUI, AppIntents, AVFoundation (AVAudioEngine mic level monitor + waveform), ASWebAuthenticationSession, Supabase SDK, LiveKitWebRTC, Orb
 - Hosting: local run, gunicorn; ngrok for mobile testing
 
 ### Security and trust boundaries
@@ -113,11 +145,12 @@ title HushhVoice Container Diagram
 Person(user, "User")
 
 System_Boundary(hv, "HushhVoice") {
-  Container(ios, "iOS App", "SwiftUI", "Chat UI, Siri intents, onboarding voice, OAuth, TTS playback")
+  Container(ios, "iOS App", "SwiftUI", "Chat UI, Siri intents, onboarding voice, OAuth, TTS playback, local onboarding cache")
   Container(web, "Web UI", "HTML/JS", "Optional web client for chat/testing")
   Container(api, "Backend API", "Python Flask", "REST endpoints and orchestration")
   ContainerDb(state, "Onboarding State", "Supabase or /tmp JSON", "Kai onboarding state")
   ContainerDb(profile, "Profile Store", "Supabase", "User profile data")
+  ContainerDb(local, "Local Onboarding Cache", "UserDefaults", "KaiLocalState + Kai Notes")
 }
 
 System_Ext(openai, "OpenAI", "Chat, TTS, Realtime")
@@ -128,6 +161,7 @@ Rel(user, ios, "Uses")
 Rel(user, web, "Uses")
 Rel(ios, api, "HTTPS JSON")
 Rel(web, api, "HTTPS JSON")
+Rel(ios, local, "Read/write state")
 Rel(api, state, "Read/write")
 Rel(api, profile, "Read/write")
 Rel(api, openai, "Chat/TTS")
@@ -151,6 +185,7 @@ Container_Boundary(api, "HushhVoice API") {
   Component(routes_tts, "routes_tts", "Flask routes", "/tts")
   Component(routes_onboarding, "routes_onboarding_agent", "Flask routes", "/onboarding/agent/*")
   Component(routes_profile, "routes_profile", "Flask routes", "/profile")
+  Component(routes_account, "routes_account", "Flask routes", "/account/delete")
   Component(routes_identity, "routes_identity_enrich", "Flask routes", "/identity/enrich")
 
   Component(auth_helpers, "auth_helpers", "Helper", "Token extraction/verification")
@@ -227,21 +262,29 @@ participant API as HushhVoice API
 participant OpenAI as OpenAI Realtime
 participant Supabase
 
+iOS->>API: GET /profile
+API->>Supabase: Load profile
+API-->>iOS: profile (exists + fields)
+
 iOS->>API: GET /onboarding/agent/config
 API->>Supabase: Load state (if configured)
-API-->>iOS: instructions, tools, kickoff, state
+API-->>iOS: instructions, tools, kickoff, state_compact, missing_keys, next_question_text
 
 iOS->>API: POST /onboarding/agent/token
 API->>OpenAI: Create realtime session
 API-->>iOS: client_secret
 
 iOS->>OpenAI: WebRTC connect (audio + data channel)
-OpenAI-->>iOS: Tool call (memory_set or memory_review)
+OpenAI-->>iOS: Tool call (memory_set)
 iOS->>API: POST /onboarding/agent/tool
 API->>Supabase: Save state (or /tmp fallback)
 API-->>iOS: tool output
 iOS->>OpenAI: function_call_output
 ```
+
+Notes:
+- iOS updates local discovery, next_question_text, completed counts, and notes from tool output.
+- Supabase sync is deferred until summary is shown.
 
 ### Mail and calendar (web or app)
 ```mermaid
@@ -363,7 +406,8 @@ Gateway --> Obs
 - Provide a stable environment separation for dev/staging/prod
 
 ## Gaps and risks observed in code
-- `/account/delete` is called by the iOS app but is not implemented in the backend
 - App auth in `/siri/ask` is a placeholder and should be enforced
 - Onboarding state falls back to `/tmp` storage if Supabase is not configured
 - Health assistant code is present but not wired into the API
+- Onboarding resume depends on Supabase config availability; when offline, local cache is used and may drift from server state
+- Realtime voice relies on short-lived client_secret tokens; token refresh failure results in reconnect and potential user interruption
