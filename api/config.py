@@ -27,6 +27,11 @@ APP_NAME = os.getenv("APP_NAME", "HushhVoice API")
 APP_VERSION = os.getenv("APP_VERSION", "0.5.0")
 PORT = int(os.getenv("PORT", "5050"))
 DEBUG = os.getenv("DEBUG", "true").lower() in ("1", "true", "yes")
+DEBUG_CONSOLE_ENABLED = os.getenv(
+    "DEBUG_CONSOLE_ENABLED",
+    "true" if DEBUG else "false",
+).lower() in ("1", "true", "yes")
+DEBUG_EVENTS_MAX = int(os.getenv("DEBUG_EVENTS_MAX", "1000"))
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
