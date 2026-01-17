@@ -4,6 +4,265 @@ This document defines the v1 architecture for the HushhVoice chat surface. It is
 
 Inspiration: ChatGPT voice mode, with a single chat surface that feels like a live call.
 
+## Diagrams (Mermaid)
+
+These diagrams summarize the system before the detailed sections below. They render in Mermaid-enabled viewers (GitHub, VS Code with Mermaid preview). If your viewer shows raw code, use a Mermaid previewer.
+
+### C4Context
+Shows external dependencies and the single chat surface boundary.
+
+```mermaid
+C4Context
+title HushhVoice Chat - System Context (Single Chat Surface)
+
+Person(user, "User", "Talks + types in a single chat surface")
+
+System_Boundary(hv, "HushhVoice") {
+  System(ios, "iOS Chat UI", "Streaming transcript + audio playback + chat history")
+  System(api, "Chat Backend", "Streaming gateway + orchestration + tools + safety")
+}
+
+System_Ext(openai, "OpenAI APIs", "Realtime (voice shell) + Text LLM + STT/TTS")
+System_Ext(google, "Google APIs", "Gmail + Calendar")
+System_Ext(supabase, "Supabase", "Profiles + turns + tool runs + memory")
+System_Ext(store, "Object Storage", "Attachments + audio references")
+
+Rel(user, ios, "Voice + text input")
+Rel(ios, api, "Canonical streaming events (audio/text/control)")
+Rel(api, openai, "Realtime stream + text inference")
+Rel(api, google, "Tool calls (read/draft/write)")
+Rel(api, supabase, "Persist state + audit + memory")
+Rel(api, store, "Store/retrieve attachments + audio refs")
+```
+
+### C4Container
+Shows production-level containers and boundaries.
+
+```mermaid
+C4Container
+title HushhVoice Chat - Containers (Production Layout)
+
+Person(user, "User")
+
+System_Boundary(hv, "HushhVoice") {
+  Container(ios, "iOS Chat UI", "SwiftUI", "Single chat surface with streaming I/O + local cache")
+
+  Container(gw, "Chat Session Gateway", "WS/WebRTC", "Session auth + canonical event stream + vendor adapter")
+
+  Container(orch, "Orchestrator", "Python", "Turn coordination + mode selection + progress narration")
+  Container(router, "Tool Router", "Python", "Gmail/Calendar/Memory/Finance tool execution")
+
+  Container(queue, "Job Queue", "Redis/SQS", "Async orchestration jobs")
+  Container(worker, "Async Worker", "Python", "Long-running tool jobs")
+
+  Container(obs, "Observability", "OTel/Logs", "Tracing + metrics + structured logs")
+
+  ContainerDb(db, "Supabase", "Postgres", "Profiles, turns, tool_runs, confirmations, memory")
+  ContainerDb(store, "Object Storage", "S3/Supabase Storage", "Attachments + audio refs")
+}
+
+System_Ext(openai, "OpenAI APIs", "Realtime + Text + STT/TTS")
+System_Ext(google, "Google APIs", "Gmail + Calendar")
+
+Rel(user, ios, "Uses")
+Rel(ios, gw, "Streaming events (audio/text/confirm/interrupt)")
+Rel(gw, openai, "Realtime voice shell + text pipeline")
+Rel(gw, orch, "Turn lifecycle + execution mode decisions")
+Rel(orch, router, "Execute plan steps + tool calls")
+Rel(router, google, "Gmail/Calendar API calls")
+
+Rel(orch, queue, "Enqueue async jobs")
+Rel(queue, worker, "Dispatch jobs")
+Rel(worker, router, "Execute long-running tool work")
+
+Rel(orch, db, "Persist turns/tool_runs/confirmations/memory")
+Rel(orch, store, "Read/write attachments + audio refs")
+Rel(orch, obs, "Emit traces + metrics + logs")
+```
+
+### C4Component
+Shows backend wiring and execution responsibilities.
+
+```mermaid
+C4Component
+title HushhVoice Chat - Backend Components (Wired)
+
+Container_Boundary(backend, "Chat Backend") {
+  Component(gw, "Chat Session Gateway", "WS/WebRTC", "Canonical streaming I/O + vendor mapping")
+
+  Component(turn, "Turn Coordinator", "Service", "turn_id/message_id + ordering + idempotency + lifecycle")
+  Component(mode, "Execution Mode Selector", "Service", "direct_response vs backend_orchestrated")
+
+  Component(plan, "Planner", "Service", "Tool plan generation (steps + required fields)")
+  Component(amb, "Ambiguity Resolver", "Service", "Resolve entities/time; block unsafe writes")
+  Component(policy, "Action Policy", "Service", "Read/Draft/Write enforcement")
+
+  Component(confirm, "Confirmation Gate", "Service", "Create confirmation_request + freeze execution")
+  Component(exec, "Executor", "Service", "Run plan + retries + partial success + progress events")
+
+  Component(router, "Tool Router", "Service", "Tool adapters: Gmail/Calendar/Memory/Finance")
+  Component(auth, "Tool Auth + Scope", "Service", "OAuth tokens + scope checks + recipient constraints")
+
+  Component(queue, "Job Queue Client", "Service", "Async jobs (enqueue + progress)")
+  Component(mem, "Memory Service", "Service", "Session context + curated long-term memory")
+  Component(obs, "Observability", "Service", "Tracing + metrics + audit logs")
+}
+
+System_Ext(openai, "OpenAI APIs", "Realtime + Text + STT/TTS")
+System_Ext(google, "Google APIs", "Gmail + Calendar")
+ContainerDb(db, "Supabase", "Postgres", "turns/tool_runs/confirmations/memory")
+ContainerDb(store, "Object Storage", "S3/Supabase Storage", "audio refs + attachments")
+
+Rel(gw, turn, "start/advance/close turn")
+Rel(turn, mode, "select execution mode")
+Rel(mode, plan, "build plan (if orchestrated)")
+Rel(plan, amb, "resolve missing fields/ambiguity")
+Rel(amb, exec, "validated plan")
+
+Rel(exec, policy, "enforce action level")
+Rel(exec, confirm, "request user confirmation")
+Rel(exec, router, "execute tools")
+Rel(router, auth, "token/scope validation")
+Rel(router, google, "Gmail/Calendar calls")
+
+Rel(router, mem, "memory read/write")
+Rel(mem, db, "persist memory rows")
+
+Rel(exec, queue, "enqueue async jobs")
+Rel(exec, db, "persist turns/tool_runs/confirmations")
+Rel(exec, store, "store/read attachments + audio refs")
+
+Rel(gw, openai, "realtime voice shell + text inference")
+Rel(exec, obs, "emit traces/metrics/audit")
+```
+
+### Sequence Diagram - Simple Turn (Realtime Direct Response)
+Shows the fast path: one user utterance, no tools.
+
+```mermaid
+sequenceDiagram
+title Simple Turn (Realtime Direct Response - No Tools)
+
+participant User
+participant iOS
+participant Gateway
+participant OpenAI
+
+User->>iOS: Speak
+iOS->>Gateway: audio.chunk (stream)
+Gateway-->>iOS: input_transcript.delta (live bubble)
+iOS->>Gateway: audio.end
+Gateway-->>iOS: input_transcript.final
+
+Gateway->>OpenAI: Realtime response.create
+OpenAI-->>Gateway: assistant_text.delta
+OpenAI-->>Gateway: assistant_audio.chunk
+
+Gateway-->>iOS: assistant_text.delta (stream bubble)
+Gateway-->>iOS: assistant_audio.chunk (play)
+Gateway-->>iOS: assistant_text.final
+Gateway-->>iOS: assistant_audio.end
+Gateway-->>iOS: turn.end(success)
+```
+
+### Sequence Diagram - Complex Turn (Orchestrated + Confirmations)
+Shows multi-tool execution with confirmation gates.
+
+```mermaid
+sequenceDiagram
+title Complex Turn (Backend Orchestrated - Multi Tool + Confirmations)
+
+participant User
+participant iOS
+participant Gateway
+participant Orchestrator
+participant Planner
+participant Executor
+participant Router as ToolRouter
+participant Google
+
+User->>iOS: Speak complex request
+iOS->>Gateway: audio.chunk (stream)
+Gateway-->>iOS: input_transcript.delta
+iOS->>Gateway: audio.end
+Gateway-->>iOS: input_transcript.final
+
+Gateway->>Orchestrator: start_turn + execution_mode=backend_orchestrated
+Orchestrator->>Planner: build_plan
+Planner-->>Orchestrator: plan (steps + missing_fields)
+Orchestrator->>Executor: execute(plan)
+
+Executor->>Router: gmail.search
+Router->>Google: Gmail search
+Google-->>Router: results
+Router-->>Executor: result
+
+Executor-->>Gateway: confirmation.request (send_email preview)
+Gateway-->>iOS: confirmation.request
+iOS->>Gateway: confirm.response(accept)
+Gateway->>Executor: confirm.response
+
+Executor->>Router: gmail.send
+Router->>Google: send email
+Google-->>Router: sent
+Router-->>Executor: result
+
+Executor->>Router: calendar.list_events (Thursday)
+Router->>Google: list events
+Google-->>Router: events
+Router-->>Executor: result
+
+Executor-->>Gateway: confirmation.request (create_event preview)
+Gateway-->>iOS: confirmation.request
+iOS->>Gateway: confirm.response(accept)
+Gateway->>Executor: confirm.response
+
+Executor->>Router: calendar.create_event
+Router->>Google: create event
+Google-->>Router: created
+Router-->>Executor: result
+
+Executor-->>Gateway: assistant_response (summary)
+Gateway-->>iOS: assistant_text.delta + assistant_audio.chunk
+Gateway-->>iOS: assistant_text.final
+Gateway-->>iOS: assistant_audio.end
+Gateway-->>iOS: turn.end(success)
+```
+
+### State Diagram - Client Turn State Machine
+Shows the v1 turn lifecycle and barge-in behavior.
+
+```mermaid
+stateDiagram-v2
+title HushhVoice Chat - Client Turn State Machine (v1)
+
+[*] --> idle
+
+idle --> listening: mic on / voice input
+idle --> finalizing_input: text.input submitted
+
+listening --> finalizing_input: speech end / audio.end
+finalizing_input --> thinking: route + mode decided
+
+thinking --> executing_tools: backend_orchestrated
+thinking --> speaking: direct_response ready
+
+executing_tools --> awaiting_confirmation: write action gate
+awaiting_confirmation --> executing_tools: confirm.accept / confirm.edit
+awaiting_confirmation --> idle: confirm.reject / timeout
+
+executing_tools --> speaking: results ready
+speaking --> idle: assistant done
+
+speaking --> cancelled: barge-in (user speaks)
+cancelled --> idle: start new turn
+
+listening --> error_recoverable: capture/transcript failure
+error_recoverable --> listening: retry
+error_recoverable --> error_terminal: fail
+error_terminal --> idle
+```
+
 ## 0) Goals and Non-Goals
 
 ### Goals
@@ -24,11 +283,15 @@ Inspiration: ChatGPT voice mode, with a single chat surface that feels like a li
   - Turn coordinator for ordering/idempotency.
   - Audit + observability first-class.
 
+These goals aim to keep UX fluid (always streaming), while making multi-step automation safe, deterministic, and auditable.
+
 ### Non-Goals (v1)
 - Video / screen share.
 - Full emotion prosody / multiple voices beyond baseline.
 - On-device MLX inference (can be v2; architecture allows it).
 - Perfect real-time alignment between text and audio (close sync is enough).
+
+These are deferred so the v1 scope stays focused on reliability, safety, and low latency.
 
 ## 1) UX / UI Requirements (Chat Surface)
 
@@ -63,6 +326,8 @@ Left -> right:
 - Realtime = voice shell (audio transport + streaming transcript + assistant audio/text).
 - Backend orchestrator handles tools, planning, confirmations, audit, idempotency.
 - iOS speaks canonical events; backend maps to vendor-specific Realtime events.
+
+Routing rule: if Realtime is healthy, keep it as the audio/text shell for every turn. Only fall back to the classic STT -> LLM -> TTS pipeline if Realtime is down. The execution mode (direct vs orchestrated) is a backend choice and should not change the UX.
 
 ### Components
 Client (iOS)
@@ -111,6 +376,8 @@ Data
 - speaking -> idle when assistant done
 - speaking -> cancelled on barge-in interrupt
 
+The state machine is a contract between UI and backend events. It keeps the chat surface predictable even when tools or confirmations are in-flight.
+
 ## 4) Canonical Streaming Event Protocol (iOS <-> Backend)
 
 ### Envelope (every event)
@@ -134,6 +401,8 @@ Data
 - `turn_seq`: monotonic per turn
 - `turn_id`: idempotency anchor for a user "turn"
 - Client must handle out-of-order delivery by sorting `(turn_id, turn_seq)` when needed, but backend should enforce order.
+
+Backpressure: if `rate_limit` arrives, the client should slow audio chunk rate and pause sending optional deltas until the retry window passes.
 
 ### Client -> Server events
 - `audio.chunk`
@@ -337,17 +606,20 @@ Logs:
 
 ### 6.1 Supabase tables (server-side)
 Minimum required for v1:
-- `user_profile`
-- `onboarding_state`
-- `oauth_tokens` (if server manages tokens)
-- `sessions`
-- `turns`
-- `tool_runs`
-- `confirmation_requests`
-- `memories`
+- `user_profile`: user identity, locale, timezone, and consent flags.
+- `onboarding_state`: onboarding progress and latest step state.
+- `oauth_tokens`: encrypted OAuth tokens + scopes (if server manages tokens).
+- `sessions`: session health, device info, and realtime health/fallback stats.
+- `turns`: per-turn lifecycle, routing mode, and final outcome.
+- `tool_runs`: each tool call with idempotency key, timing, and status.
+- `confirmation_requests`: pending/accepted/rejected confirmations for write actions.
+- `memories`: curated long-term memory rows (preference/fact/instruction).
 
 Optional:
-- `chat_threads`, `chat_messages` (if you want cross-device or analytics)
+- `chat_threads`: thread metadata and ordering for cross-device views.
+- `chat_messages`: persisted transcript + assistant responses for history/analytics.
+
+Retention: store enough for audit and user history, and support delete/export on request.
 
 ### 6.2 On-device storage
 Store locally for performance + offline scroll:
@@ -534,248 +806,3 @@ Phase 7 - Async jobs
 - Server chat storage: store all messages in Supabase (`chat_messages`) or only on device?
 - Token storage: server-managed OAuth tokens vs client-held tokens (recommended server-managed).
 - Memory UI: when do users view/edit/delete memories (v1.5)?
-
-## Diagrams (Mermaid)
-
-### C4Context
-```mermaid
-C4Context
-title HushhVoice Chat - System Context (Single Chat Surface)
-
-Person(user, "User", "Talks + types in a single chat surface")
-
-System_Boundary(hv, "HushhVoice") {
-  System(ios, "iOS Chat UI", "Streaming transcript + audio playback + chat history")
-  System(api, "Chat Backend", "Streaming gateway + orchestration + tools + safety")
-}
-
-System_Ext(openai, "OpenAI APIs", "Realtime (voice shell) + Text LLM + STT/TTS")
-System_Ext(google, "Google APIs", "Gmail + Calendar")
-System_Ext(supabase, "Supabase", "Profiles + turns + tool runs + memory")
-System_Ext(store, "Object Storage", "Attachments + audio references")
-
-Rel(user, ios, "Voice + text input")
-Rel(ios, api, "Canonical streaming events (audio/text/control)")
-Rel(api, openai, "Realtime stream + text inference")
-Rel(api, google, "Tool calls (read/draft/write)")
-Rel(api, supabase, "Persist state + audit + memory")
-Rel(api, store, "Store/retrieve attachments + audio refs")
-```
-
-### C4Container
-```mermaid
-C4Container
-title HushhVoice Chat - Containers (Production Layout)
-
-Person(user, "User")
-
-System_Boundary(hv, "HushhVoice") {
-  Container(ios, "iOS Chat UI", "SwiftUI", "Single chat surface with streaming I/O + local cache")
-
-  Container(gw, "Chat Session Gateway", "WS/WebRTC", "Session auth + canonical event stream + vendor adapter")
-
-  Container(orch, "Orchestrator", "Python", "Turn coordination + mode selection + progress narration")
-  Container(router, "Tool Router", "Python", "Gmail/Calendar/Memory/Finance tool execution")
-
-  Container(queue, "Job Queue", "Redis/SQS", "Async orchestration jobs")
-  Container(worker, "Async Worker", "Python", "Long-running tool jobs")
-
-  Container(obs, "Observability", "OTel/Logs", "Tracing + metrics + structured logs")
-
-  ContainerDb(db, "Supabase", "Postgres", "Profiles, turns, tool_runs, confirmations, memory")
-  ContainerDb(store, "Object Storage", "S3/Supabase Storage", "Attachments + audio refs")
-}
-
-System_Ext(openai, "OpenAI APIs", "Realtime + Text + STT/TTS")
-System_Ext(google, "Google APIs", "Gmail + Calendar")
-
-Rel(user, ios, "Uses")
-Rel(ios, gw, "Streaming events (audio/text/confirm/interrupt)")
-Rel(gw, openai, "Realtime voice shell + text pipeline")
-Rel(gw, orch, "Turn lifecycle + execution mode decisions")
-Rel(orch, router, "Execute plan steps + tool calls")
-Rel(router, google, "Gmail/Calendar API calls")
-
-Rel(orch, queue, "Enqueue async jobs")
-Rel(queue, worker, "Dispatch jobs")
-Rel(worker, router, "Execute long-running tool work")
-
-Rel(orch, db, "Persist turns/tool_runs/confirmations/memory")
-Rel(orch, store, "Read/write attachments + audio refs")
-Rel(orch, obs, "Emit traces + metrics + logs")
-```
-
-### C4Component
-```mermaid
-C4Component
-title HushhVoice Chat - Backend Components (Wired)
-
-Container_Boundary(backend, "Chat Backend") {
-  Component(gw, "Chat Session Gateway", "WS/WebRTC", "Canonical streaming I/O + vendor mapping")
-
-  Component(turn, "Turn Coordinator", "Service", "turn_id/message_id + ordering + idempotency + lifecycle")
-  Component(mode, "Execution Mode Selector", "Service", "direct_response vs backend_orchestrated")
-
-  Component(plan, "Planner", "Service", "Tool plan generation (steps + required fields)")
-  Component(amb, "Ambiguity Resolver", "Service", "Resolve entities/time; block unsafe writes")
-  Component(policy, "Action Policy", "Service", "Read/Draft/Write enforcement")
-
-  Component(confirm, "Confirmation Gate", "Service", "Create confirmation_request + freeze execution")
-  Component(exec, "Executor", "Service", "Run plan + retries + partial success + progress events")
-
-  Component(router, "Tool Router", "Service", "Tool adapters: Gmail/Calendar/Memory/Finance")
-  Component(auth, "Tool Auth + Scope", "Service", "OAuth tokens + scope checks + recipient constraints")
-
-  Component(queue, "Job Queue Client", "Service", "Async jobs (enqueue + progress)")
-  Component(mem, "Memory Service", "Service", "Session context + curated long-term memory")
-  Component(obs, "Observability", "Service", "Tracing + metrics + audit logs")
-}
-
-System_Ext(openai, "OpenAI APIs", "Realtime + Text + STT/TTS")
-System_Ext(google, "Google APIs", "Gmail + Calendar")
-ContainerDb(db, "Supabase", "Postgres", "turns/tool_runs/confirmations/memory")
-ContainerDb(store, "Object Storage", "S3/Supabase Storage", "audio refs + attachments")
-
-Rel(gw, turn, "start/advance/close turn")
-Rel(turn, mode, "select execution mode")
-Rel(mode, plan, "build plan (if orchestrated)")
-Rel(plan, amb, "resolve missing fields/ambiguity")
-Rel(amb, exec, "validated plan")
-
-Rel(exec, policy, "enforce action level")
-Rel(exec, confirm, "request user confirmation")
-Rel(exec, router, "execute tools")
-Rel(router, auth, "token/scope validation")
-Rel(router, google, "Gmail/Calendar calls")
-
-Rel(router, mem, "memory read/write")
-Rel(mem, db, "persist memory rows")
-
-Rel(exec, queue, "enqueue async jobs")
-Rel(exec, db, "persist turns/tool_runs/confirmations")
-Rel(exec, store, "store/read attachments + audio refs")
-
-Rel(gw, openai, "realtime voice shell + text inference")
-Rel(exec, obs, "emit traces/metrics/audit")
-```
-
-### Sequence Diagram - Simple Turn (Realtime Direct Response)
-```mermaid
-sequenceDiagram
-title Simple Turn (Realtime Direct Response - No Tools)
-
-participant User
-participant iOS
-participant Gateway
-participant OpenAI
-
-User->>iOS: Speak
-iOS->>Gateway: audio.chunk (stream)
-Gateway-->>iOS: input_transcript.delta (live bubble)
-iOS->>Gateway: audio.end
-Gateway-->>iOS: input_transcript.final
-
-Gateway->>OpenAI: Realtime response.create
-OpenAI-->>Gateway: assistant_text.delta
-OpenAI-->>Gateway: assistant_audio.chunk
-
-Gateway-->>iOS: assistant_text.delta (stream bubble)
-Gateway-->>iOS: assistant_audio.chunk (play)
-Gateway-->>iOS: assistant_text.final
-Gateway-->>iOS: assistant_audio.end
-Gateway-->>iOS: turn.end(success)
-```
-
-### Sequence Diagram - Complex Turn (Orchestrated + Confirmations)
-```mermaid
-sequenceDiagram
-title Complex Turn (Backend Orchestrated - Multi Tool + Confirmations)
-
-participant User
-participant iOS
-participant Gateway
-participant Orchestrator
-participant Planner
-participant Executor
-participant Router as ToolRouter
-participant Google
-
-User->>iOS: Speak complex request
-iOS->>Gateway: audio.chunk (stream)
-Gateway-->>iOS: input_transcript.delta
-iOS->>Gateway: audio.end
-Gateway-->>iOS: input_transcript.final
-
-Gateway->>Orchestrator: start_turn + execution_mode=backend_orchestrated
-Orchestrator->>Planner: build_plan
-Planner-->>Orchestrator: plan (steps + missing_fields)
-Orchestrator->>Executor: execute(plan)
-
-Executor->>Router: gmail.search
-Router->>Google: Gmail search
-Google-->>Router: results
-Router-->>Executor: result
-
-Executor-->>Gateway: confirmation.request (send_email preview)
-Gateway-->>iOS: confirmation.request
-iOS->>Gateway: confirm.response(accept)
-Gateway->>Executor: confirm.response
-
-Executor->>Router: gmail.send
-Router->>Google: send email
-Google-->>Router: sent
-Router-->>Executor: result
-
-Executor->>Router: calendar.list_events (Thursday)
-Router->>Google: list events
-Google-->>Router: events
-Router-->>Executor: result
-
-Executor-->>Gateway: confirmation.request (create_event preview)
-Gateway-->>iOS: confirmation.request
-iOS->>Gateway: confirm.response(accept)
-Gateway->>Executor: confirm.response
-
-Executor->>Router: calendar.create_event
-Router->>Google: create event
-Google-->>Router: created
-Router-->>Executor: result
-
-Executor-->>Gateway: assistant_response (summary)
-Gateway-->>iOS: assistant_text.delta + assistant_audio.chunk
-Gateway-->>iOS: assistant_text.final
-Gateway-->>iOS: assistant_audio.end
-Gateway-->>iOS: turn.end(success)
-```
-
-### State Diagram - Client Turn State Machine
-```mermaid
-stateDiagram-v2
-title HushhVoice Chat - Client Turn State Machine (v1)
-
-[*] --> idle
-
-idle --> listening: mic on / voice input
-idle --> finalizing_input: text.input submitted
-
-listening --> finalizing_input: speech end / audio.end
-finalizing_input --> thinking: route + mode decided
-
-thinking --> executing_tools: backend_orchestrated
-thinking --> speaking: direct_response ready
-
-executing_tools --> awaiting_confirmation: write action gate
-awaiting_confirmation --> executing_tools: confirm.accept / confirm.edit
-awaiting_confirmation --> idle: confirm.reject / timeout
-
-executing_tools --> speaking: results ready
-speaking --> idle: assistant done
-
-speaking --> cancelled: barge-in (user speaks)
-cancelled --> idle: start new turn
-
-listening --> error_recoverable: capture/transcript failure
-error_recoverable --> listening: retry
-error_recoverable --> error_terminal: fail
-error_terminal --> idle
-```
