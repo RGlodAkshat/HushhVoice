@@ -234,7 +234,6 @@ Shows the v1 turn lifecycle and barge-in behavior.
 
 ```mermaid
 stateDiagram-v2
-title HushhVoice Chat - Client Turn State Machine (v1)
 
 [*] --> idle
 
