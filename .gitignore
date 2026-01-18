@@ -12,3 +12,10 @@ __pycache__/
 .venv/
 venv/
 .vercel
+
+.DS_Store
+        STS_Testing.py
+        backend/.DS_Store
+        inv_20260109_015502.json
+        test.py
+        testing/

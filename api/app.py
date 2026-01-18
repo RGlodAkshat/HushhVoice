@@ -77,6 +77,7 @@ def create_app() -> Flask:
     from routes.intent import intent_bp
     from routes.identity_enrich import identity_enrich_bp
     from routes.debug import debug_bp
+    from routes.chat_stream import init_chat_stream
 
     app.register_blueprint(onboarding_bp)
     app.register_blueprint(profile_bp)
@@ -90,6 +91,7 @@ def create_app() -> Flask:
     app.register_blueprint(intent_bp)
     app.register_blueprint(identity_enrich_bp)
     app.register_blueprint(debug_bp)
+    init_chat_stream(app)
 
     register_error_handlers(app)
     return app

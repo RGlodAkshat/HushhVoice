@@ -1,6 +1,7 @@
 # HushhVoice Frontend
 
 This folder contains a static HTML/CSS/JS web client that talks to the Flask backend in `api/`.
+Note: the new chat streaming WebSocket (`/chat/stream`) is currently used by the iOS app, not this web UI.
 
 ## Files
 
@@ -12,9 +13,19 @@ This folder contains a static HTML/CSS/JS web client that talks to the Flask bac
 ## How The Frontend Works
 
 - Uses plain HTML, CSS, and vanilla JS.
-- Talks to the backend via `fetch` calls to endpoints like `/siri/ask`, `/echo`, `/mailgpt/answer`, `/calendar/answer`, `/tts`.
-- Google sign-in is handled by the GIS client script loaded in `index.html`.
+- Uses `/intent/classify` to route requests to chat, Gmail, or Calendar flows.
+- Talks to the backend via `fetch` calls to `/echo` (or `/echo/stream`), `/mailgpt/answer`, `/mailgpt/reply`, `/calendar/answer`, `/calendar/plan`, `/tts`.
+- Builds a short-term memory window from localStorage threads and sends it as `messages` on each request.
+- Google sign-in is handled by the GIS client script loaded in `index.html`; Gmail/Calendar calls send `X-Google-Access-Token`.
 - The backend base URL is configured in `script.js` under `CONFIG.BASE_URL`.
+
+## Config Knobs (script.js)
+
+- `CONFIG.BASE_URL` — Backend base URL.
+- `CONFIG.CLIENT_ID` — Google OAuth client ID.
+- `CONFIG.USE_STREAMING` — Use `/echo/stream` instead of `/echo`.
+- `CONFIG.MEMORY_WINDOW_MESSAGES` — Number of recent messages included in each call.
+- `CONFIG.AUTO_TTS` — Auto-play TTS after responses.
 
 ## Run Locally
 

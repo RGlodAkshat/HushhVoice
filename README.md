@@ -1,48 +1,52 @@
 # HushhVoice — Consent-first AI Copilot (Flask)
 
-HushhVoice is a private AI assistant with Gmail/Calendar support, Siri/Shortcuts integration, and onboarding flows. The backend lives in `api/` and runs as a Flask app.
+HushhVoice is a private AI assistant with Gmail/Calendar support, Siri/Shortcuts integration, and onboarding flows. The backend lives in `api/` and runs as a Flask app; the iOS app is in `HushhVoice_v2/`.
 
 ## Project Structure
 
 ```
 /project
 ├── api/
-│   ├── index.py              # Flask entrypoint (imports modules, runs app)
-│   ├── app_context.py        # App config, OpenAI client, logging, CORS
-│   ├── json_helpers.py       # jok/jerror + JSON file helpers
-│   ├── auth_helpers.py       # Google token helpers
-│   ├── google_helpers.py     # Google Calendar API helpers
-│   ├── openai_helpers.py     # OpenAI message handling + chat wrapper
-│   ├── intent_helpers.py     # Intent classification helper
-│   ├── mail_helpers.py       # Gmail fetching + LLM mail QA + drafting
-│   ├── calendar_helpers.py   # Calendar Q&A + planning helpers
-│   ├── error_handlers.py     # Flask error handlers (404/500)
-│   ├── routes_meta.py        # /health, /version
-│   ├── routes_intent.py      # /intent/classify
-│   ├── routes_echo.py        # /echo + /echo/stream
-│   ├── routes_siri.py        # /siri/ask
-│   ├── routes_mail.py        # /mailgpt/answer + /mailgpt/reply
-│   ├── routes_calendar.py    # /calendar/answer + /calendar/plan
-│   ├── routes_tts.py         # /tts
-│   ├── routes_onboarding_agent.py  # /onboarding/agent/*
-│   ├── routes_profile.py     # /profile (Supabase-backed profile)
-│   └── routes_identity_enrich.py   # /identity/enrich
+│   ├── index.py              # Flask entrypoint (runs app)
+│   ├── app.py                # create_app() + blueprint wiring
+│   ├── config.py             # Config + env loading + logging
+│   ├── routes/               # Flask blueprints per route group
+│   ├── services/             # Business logic (mail/calendar/onboarding/etc.)
+│   ├── storage/              # Supabase + onboarding state persistence
+│   ├── clients/              # OpenAI/Google client wrappers
+│   ├── utils/                # shared helpers (jok/jerror, auth)
+│   └── schemas/              # soft typing for request/response shapes
 ├── backend/                  # Supporting agent code (email helpers, etc.)
 ├── frontend/                 # Web UI (if used)
+├── HushhVoice_v2/            # iOS app (SwiftUI)
+│   └── HushhVoice/HushhVoice # App source
+├── architecture.md
 └── requirements.txt
 ```
 
 ## Backend Overview (api/)
 
-- `index.py` is the entrypoint. It only imports modules so their routes register on the Flask `app`, then runs the server.
-- `app_context.py` centralizes configuration, logging, OpenAI client setup, and Flask+CORS init so every module shares the same app instance.
-- `json_helpers.py` provides consistent response shapes (`jok`, `jerror`) used by all routes.
-- `auth_helpers.py` and `google_helpers.py` wrap Google OAuth token handling and Calendar API calls.
-- `openai_helpers.py` contains the message normalization and OpenAI chat wrapper used by multiple endpoints.
-- `intent_helpers.py`, `mail_helpers.py`, and `calendar_helpers.py` group reusable logic for intent classification, Gmail Q&A/drafting, and Calendar Q&A/planning.
-- `routes_*.py` files each define a small set of related endpoints.
-- `routes_onboarding_agent.py` implements the Kai onboarding agent with Supabase-backed state.
-- `routes_profile.py` stores user profile data (name/phone/email) in Supabase.
+- `index.py` is the entrypoint. It runs the Flask app exposed by `app.py`.
+- `app.py` defines the app factory and registers all route blueprints.
+- `config.py` centralizes configuration, logging, env loading, and path setup.
+- `utils/json_helpers.py` provides consistent response shapes (`jok`, `jerror`) used by all routes.
+- `utils/auth_helpers.py` wraps Google OAuth token handling.
+- `clients/openai_client.py` and `clients/google_client.py` wrap OpenAI and Google calls.
+- `services/*` contain route-independent business logic (onboarding, mail, calendar, tool router, memory, etc.).
+- `services/tool_router_service.py` powers `/siri/ask` with OpenAI tool calling (Gmail, Calendar, memory).
+- `services/chat_gateway.py` powers `/chat/stream` for streaming chat events (text deltas, tool progress, confirmations).
+- `services/memory_service.py` and `storage/memory_store.py` manage embedding-backed memory storage.
+- `storage/*` isolates disk/Supabase persistence for onboarding, profiles, and memory.
+- `routes/debug.py` exposes an in-memory debug console (when enabled).
+- `utils/debug_events.py` stores request/response debug events.
+- `routes/*` define the endpoint handlers, grouped by domain.
+
+## iOS App Overview (HushhVoice_v2/)
+
+- Entry point: `HushhVoiceApp.swift` launches `ChatView` and restores Apple Supabase sessions.
+- Network: `Services/HushhAPI.swift` defines the backend base URL, app JWT, and `/siri/ask`, `/tts`, `/account/delete` calls (update `base` for your backend).
+- Auth: `GoogleSignInManager` (OAuth PKCE + App Group token storage) and `AppleSupabaseAuth` (Sign in with Apple -> Supabase).
+- Onboarding: `OnboardingCoordinator` + `KaiVoiceViewModel` (OpenAI Realtime WebRTC) with local caching and `/onboarding/agent/sync` to Supabase.
 
 ## How To Run The Backend
 
@@ -87,19 +91,38 @@ Use the HTTPS URL printed by ngrok (example: `https://xxxx.ngrok-free.app`) in y
 Create a `.env` at the project root (or set in your shell):
 
 ```
+APP_NAME=HushhVoice API
+APP_VERSION=0.5.0
+PORT=5050
+DEBUG=true
+DEBUG_CONSOLE_ENABLED=true
+DEBUG_EVENTS_MAX=1000
+
 OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-4o
-PORT=5050
+OPENAI_EMBED_MODEL=text-embedding-3-small
+OPENAI_SUMMARY_MODEL=gpt-4.1-nano
+OPENAI_REALTIME_MODEL=gpt-4o-realtime-preview
+FLASK_SECRET=change-me
+
 VERIFY_GOOGLE_TOKEN=false
 DEFAULT_TZ=UTC
 
 HUSHHVOICE_URL_SUPABASE=...
 HUSHHVOICE_SERVICE_ROLE_KEY_SUPABASE=...
-HUSHHVOICE_ONBOARDING_TABLE_SUPABASE=kai_onboarding_public_test
+HUSHHVOICE_ONBOARDING_TABLE_SUPABASE=kai_onboarding_state
 HUSHHVOICE_ONBOARDING_STATE_COLUMN=state
 HUSHHVOICE_PROFILE_TABLE_SUPABASE=kai_user_profile
 HUSHHVOICE_SUPABASE_TIMEOUT_SECS=5
 HUSHH_ONBOARDING_CACHE_TTL=5
+HUSHH_ONBOARDING_STATE_DIR=/tmp/hushh_onboarding_state
+HUSHH_MEMORY_STORE_PATH=/tmp/hushh_memory_store.json
+HUSHHVOICE_MEMORY_TABLE_SUPABASE=hushh_memory_store
+HUSHHVOICE_MEMORY_COLUMN_SUPABASE=memory
+HUSHHVOICE_TURNS_TABLE_SUPABASE=chat_turns
+HUSHHVOICE_TOOL_RUNS_TABLE_SUPABASE=tool_runs
+HUSHHVOICE_CONFIRMATIONS_TABLE_SUPABASE=confirmation_requests
+HUSHHVOICE_SESSIONS_TABLE_SUPABASE=chat_sessions
 ```
 
 ## Common Endpoints
@@ -107,14 +130,36 @@ HUSHH_ONBOARDING_CACHE_TTL=5
 - `GET /health`
 - `POST /siri/ask`
 - `POST /echo` and `POST /echo/stream`
+- `WS /chat/stream` (canonical streaming chat events)
+- `POST /intent/classify`
 - `POST /mailgpt/answer` and `POST /mailgpt/reply`
 - `POST /calendar/answer` and `POST /calendar/plan`
 - `POST /tts`
 - `GET /profile`, `POST /profile`
+- `POST /identity/enrich`
 - `GET /onboarding/agent/config`
 - `POST /onboarding/agent/token`
 - `POST /onboarding/agent/tool`
 - `GET /onboarding/agent/state`
+- `POST /onboarding/agent/sync`
 - `POST /onboarding/agent/reset`
+- `GET /debug`, `GET /debug/ui`, `GET /debug/events`, `POST /debug/clear`
 
-If you want this README to include frontend or iOS steps, tell me what to add.
+Note: `/siri/ask` expects `tokens.app_jwt` and accepts an optional `tokens.google_access_token`.
+
+## Debug Console
+
+Set `DEBUG_CONSOLE_ENABLED=true` and open `/debug/ui` to view in-memory request and tool events.
+
+## Tests
+
+From the `api/` folder:
+
+```bash
+pytest
+```
+
+## Chat Streaming Notes
+
+- The chat gateway emits canonical events: `assistant_text.delta`, `tool_call.progress`, `confirmation.request`, `turn.start/end`.
+- Audio streaming events (`assistant_audio.*`) are stubbed for now and can be wired once streaming TTS is available.

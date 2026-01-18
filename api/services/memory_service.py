@@ -14,6 +14,7 @@ from storage.memory_store import (
     save_memory,
     save_memory_to_supabase,
 )
+from storage.memory_store_v2 import create_memory
 
 
 def _now_iso() -> str:
@@ -134,6 +135,16 @@ def write_memory(
     if sync:
         entries = load_memory(user_id)
         _ = save_memory_to_supabase(user_id, entries)
+        _ = create_memory({
+            "memory_id": entry["id"],
+            "user_id": user_id,
+            "type": "fact",
+            "content": entry["content"],
+            "source": entry["source"],
+            "confidence": 0.85,
+            "created_at": entry["created_at"],
+            "updated_at": entry["updated_at"],
+        })
 
     return {
         "id": entry["id"],

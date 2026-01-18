@@ -1,11 +1,13 @@
 flask
 flask-cors
+flask-sock
 openai
 requests
 python-dotenv
 google-api-python-client
 google-auth-httplib2
 google-auth-oauthlib
+websockets
 gunicorn
 pyyaml 
 setuptools 
