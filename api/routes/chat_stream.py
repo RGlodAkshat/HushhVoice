@@ -23,22 +23,28 @@ def init_chat_stream(app) -> None:
 
 
 @sock.route("/chat/stream")
+def _safe_uuid(raw: str) -> str | None:
+    if not raw:
+        return None
+    try:
+        return str(uuid.UUID(raw))
+    except Exception:
+        return None
+
+
 def chat_stream(ws) -> None:
     session_token = request.args.get("session_token") or request.headers.get("X-Session-Token") or ""
-    user_id = request.headers.get("X-User-Id") or "dev-anon"
-    session_id = request.args.get("session_id") or str(uuid.uuid4())
+    raw_user_id = request.headers.get("X-User-Id") or ""
+    raw_session_id = request.args.get("session_id") or ""
+
+    session_id = _safe_uuid(raw_session_id) or str(uuid.uuid4())
+    user_id = _safe_uuid(raw_user_id) or _safe_uuid(session_id) or str(uuid.uuid4())
     ctx = SessionContext(session_id=session_id, user_id=user_id, request_id=request.headers.get("X-Request-Id"))
 
     now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    user_id_safe = None
-    try:
-        user_id_safe = str(uuid.UUID(user_id))
-    except Exception:
-        user_id_safe = None
-
     create_session({
         "session_id": session_id,
-        "user_id": user_id_safe,
+        "user_id": user_id,
         "started_at": now_iso,
     })
 
@@ -66,6 +72,6 @@ def chat_stream(ws) -> None:
         for resp in gateway.handle_event(event, ctx):
             ws.send(json.dumps(resp))
 
-    update_session(session_id, {"last_seen_at": now_iso})
+    update_session(session_id, {"last_seen_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")})
     log_event("gateway", "ws_disconnect", session_id=session_id, request_id=ctx.request_id)
     log.info("[ChatStream] disconnected session=%s", session_id)

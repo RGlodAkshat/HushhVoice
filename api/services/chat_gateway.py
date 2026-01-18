@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from dataclasses import dataclass
@@ -68,6 +69,44 @@ def _chunk_text(text: str, max_len: int = 90) -> Iterable[str]:
     return chunks
 
 
+def _iter_stream_chunks(stream: Any) -> Iterable[Any]:
+    if hasattr(stream, "__iter__"):
+        try:
+            for chunk in stream:
+                yield chunk
+            return
+        except TypeError:
+            pass
+    if hasattr(stream, "iter_lines"):
+        for raw_line in stream.iter_lines():
+            if not raw_line:
+                continue
+            if isinstance(raw_line, (bytes, bytearray)):
+                line = raw_line.decode("utf-8", errors="ignore")
+            else:
+                line = str(raw_line)
+            if not line.startswith("data:"):
+                continue
+            payload = line.replace("data:", "", 1).strip()
+            if payload == "[DONE]":
+                break
+            try:
+                yield json.loads(payload)
+            except Exception:
+                continue
+
+
+def _extract_delta(chunk: Any) -> Optional[str]:
+    if hasattr(chunk, "choices") and chunk.choices:
+        return getattr(chunk.choices[0].delta, "content", None)
+    if isinstance(chunk, dict):
+        try:
+            return chunk["choices"][0]["delta"].get("content")
+        except Exception:
+            return None
+    return None
+
+
 def _stream_basic_completion(prompt: str, retries: int = 2) -> Iterable[str]:
     if not client:
         yield "(offline) " + prompt[:180]
@@ -84,11 +123,10 @@ def _stream_basic_completion(prompt: str, retries: int = 2) -> Iterable[str]:
                 max_tokens=500,
                 stream=True,
             )
-            for chunk in stream:
-                if hasattr(chunk, "choices") and chunk.choices:
-                    delta = getattr(chunk.choices[0].delta, "content", None)
-                    if delta:
-                        yield delta
+            for chunk in _iter_stream_chunks(stream):
+                delta = _extract_delta(chunk)
+                if delta:
+                    yield delta
             return
         except Exception as exc:
             last_error = exc
