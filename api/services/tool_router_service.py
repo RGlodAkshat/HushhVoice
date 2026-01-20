@@ -9,8 +9,17 @@ from typing import Any, Callable, Dict, List, Optional
 from clients.google_client import _google_get, _google_post, _normalize_event_datetime, _iso
 from clients.openai_client import client
 from config import OPENAI_MODEL, log
+from services.cache_sync_service import (
+    is_calendar_cache_fresh,
+    is_gmail_cache_fresh,
+    refresh_calendar_cache,
+    refresh_gmail_cache,
+)
+from services.mail_service import draft_reply_from_mail
 from services.memory_service import search_memory, write_memory
 from storage.profile_store import load_profile
+from storage.calendar_cache_store import get_cached_events
+from storage.gmail_cache_store import get_cached_messages
 from agents.email_assistant.gmail_fetcher import fetch_recent_emails, send_email
 from agents.email_assistant.helper_functions import trim_email_fields
 from utils.debug_events import debug_enabled, record_event
@@ -32,6 +41,74 @@ class ToolContext:
 _EMAIL_EXTRACT_RE = re.compile(r"<([^>]+)>")
 _EMAIL_FIND_RE = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
 _EMAIL_VALID_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _filter_cached_emails(rows: List[Dict[str, Any]], query: str) -> List[Dict[str, Any]]:
+    if not query:
+        return rows
+    q = query.lower()
+    tokens = [t for t in q.split() if t]
+    filtered: List[Dict[str, Any]] = []
+    for row in rows:
+        hay = " ".join([
+            str(row.get("from_email") or ""),
+            str(row.get("from_name") or ""),
+            str(row.get("subject") or ""),
+            str(row.get("snippet") or ""),
+        ]).lower()
+        if all(tok in hay for tok in tokens):
+            filtered.append(row)
+    return filtered
+
+
+def _normalize_cached_emails(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    normalized = []
+    for row in rows:
+        normalized.append({
+            "from": row.get("from_name") or row.get("from_email") or "",
+            "subject": row.get("subject") or "",
+            "date": row.get("date_label") or row.get("internal_date") or "",
+            "snippet": row.get("snippet") or "",
+        })
+    return normalized
+
+
+def _refresh_gmail_async(ctx: ToolContext, query: str) -> None:
+    import threading
+
+    def _run():
+        try:
+            refresh_gmail_cache(ctx.user_id, ctx.google_token or "", query=query or "")
+        except Exception:
+            log.exception("gmail cache refresh async failed")
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def _refresh_calendar_async(ctx: ToolContext) -> None:
+    import threading
+
+    def _run():
+        try:
+            refresh_calendar_cache(ctx.user_id, ctx.google_token or "")
+        except Exception:
+            log.exception("calendar cache refresh async failed")
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def _filter_calendar_range(events: List[Dict[str, Any]], time_min: str, time_max: str) -> List[Dict[str, Any]]:
+    if not time_min and not time_max:
+        return events
+    filtered: List[Dict[str, Any]] = []
+    for ev in events:
+        start = str(ev.get("start") or "")
+        if time_min and start and start < time_min:
+            continue
+        if time_max and start and start > time_max:
+            continue
+        filtered.append(ev)
+    return filtered
 
 
 def _clean_email(addr: str) -> str:
@@ -80,15 +157,20 @@ def _gmail_search(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, Any]:
     if missing:
         return missing
     query = (args.get("query") or "").strip()
-    max_results = int(args.get("max_results") or 10)
+    max_results = max(1, min(int(args.get("max_results") or 10), 10))
     try:
-        emails = fetch_recent_emails(
-            access_token=ctx.google_token,
-            max_results=max_results,
-            q=query or None,
-            label_ids=None,
-            include_snippet=True,
-        )
+        cached = get_cached_messages(ctx.user_id, limit=max_results)
+        filtered = _filter_cached_emails(cached, query) if cached else []
+        if filtered:
+            filtered = filtered[:max_results]
+            if not is_gmail_cache_fresh(ctx.user_id):
+                _refresh_gmail_async(ctx, query)
+            record_event("cache", "gmail_hit", data={"count": len(filtered)}, request_id=ctx.request_id)
+            return _tool_ok({"emails": trim_email_fields(_normalize_cached_emails(filtered))})
+
+        emails = refresh_gmail_cache(ctx.user_id, ctx.google_token or "", query=query or "")
+        emails = emails[:max_results]
+        record_event("cache", "gmail_miss", data={"count": len(emails)}, request_id=ctx.request_id)
         return _tool_ok({"emails": trim_email_fields(emails)})
     except Exception as e:
         log.exception("gmail_search failed")
@@ -144,37 +226,52 @@ def _gmail_send(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, Any]:
     return _tool_ok({"sent": True, "to": to_email, "subject": subject})
 
 
+def _gmail_draft_reply(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, Any]:
+    missing = _require_google(ctx)
+    if missing:
+        return missing
+    instruction = str(args.get("instruction") or args.get("prompt") or "").strip()
+    max_results = int(args.get("max_results") or 20)
+    user_name = str(args.get("user_name") or "").strip()
+    if not instruction:
+        return _tool_err("instruction is required", "invalid_arguments")
+    if not user_name:
+        profile = load_profile(ctx.user_id) or {}
+        user_name = (profile.get("full_name") or "").strip() or "HushhVoice User"
+    try:
+        drafted = draft_reply_from_mail(
+            access_token=ctx.google_token or "",
+            instruction=instruction,
+            user_name=user_name,
+            max_results=max_results,
+        )
+        return _tool_ok({"draft": drafted})
+    except Exception as e:
+        log.exception("gmail_draft_reply failed")
+        return _tool_err(str(e))
+
+
 def _calendar_list_events(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, Any]:
     missing = _require_google(ctx)
     if missing:
         return missing
-    max_results = int(args.get("max_results") or 50)
-    now = datetime.now(timezone.utc)
-    time_min = args.get("time_min") or _iso(now - timedelta(days=14))
-    time_max = args.get("time_max") or _iso(now + timedelta(days=60))
+    max_results = max(1, min(int(args.get("max_results") or 50), 50))
+    time_min = (args.get("time_min") or "").strip()
+    time_max = (args.get("time_max") or "").strip()
     try:
-        resp = _google_get(
-            ctx.google_token,
-            "/calendars/primary/events",
-            {
-                "timeMin": time_min,
-                "timeMax": time_max,
-                "singleEvents": True,
-                "orderBy": "startTime",
-                "maxResults": min(max_results, 250),
-            },
-        )
-        items = resp.get("items", []) or []
-        events = []
-        for e in items:
-            events.append({
-                "id": e.get("id"),
-                "summary": e.get("summary") or "(No title)",
-                "start": (e.get("start", {}) or {}).get("dateTime") or (e.get("start", {}) or {}).get("date"),
-                "end": (e.get("end", {}) or {}).get("dateTime") or (e.get("end", {}) or {}).get("date"),
-                "location": e.get("location"),
-                "attendees": [a.get("email") for a in (e.get("attendees") or []) if a.get("email")],
-            })
+        cached = get_cached_events(ctx.user_id, limit=max_results)
+        if cached:
+            if time_min or time_max:
+                cached = _filter_calendar_range(cached, time_min, time_max)
+            cached = cached[:max_results]
+            if not is_calendar_cache_fresh(ctx.user_id):
+                _refresh_calendar_async(ctx)
+            record_event("cache", "calendar_hit", data={"count": len(cached)}, request_id=ctx.request_id)
+            return _tool_ok({"events": cached})
+
+        events = refresh_calendar_cache(ctx.user_id, ctx.google_token or "")
+        events = events[:max_results]
+        record_event("cache", "calendar_miss", data={"count": len(events)}, request_id=ctx.request_id)
         return _tool_ok({"events": events})
     except Exception as e:
         log.exception("calendar_list_events failed")
@@ -301,6 +398,20 @@ TOOL_SPECS: Dict[str, ToolSpec] = {
         },
         handler=_gmail_send,
     ),
+    "gmail_draft_reply": ToolSpec(
+        name="gmail_draft_reply",
+        description="Draft a reply email based on recent inbox context.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "instruction": {"type": "string", "description": "Instruction for the reply"},
+                "max_results": {"type": "integer", "description": "How many recent emails to consider", "default": 20},
+                "user_name": {"type": "string", "description": "Optional signature name"},
+            },
+            "required": ["instruction"],
+        },
+        handler=_gmail_draft_reply,
+    ),
     "calendar_list_events": ToolSpec(
         name="calendar_list_events",
         description="List calendar events in a time window.",
@@ -397,6 +508,25 @@ def build_openai_tools() -> List[Dict[str, Any]]:
             },
         })
     return tools
+
+
+def build_realtime_tools_schema() -> List[Dict[str, Any]]:
+    tools = []
+    for spec in TOOL_SPECS.values():
+        tools.append({
+            "type": "function",
+            "name": spec.name,
+            "description": spec.description,
+            "parameters": spec.parameters,
+        })
+    return tools
+
+
+def run_tool_by_name(tool_name: str, args: Dict[str, Any], ctx: ToolContext) -> Dict[str, Any]:
+    spec = TOOL_SPECS.get(tool_name)
+    if not spec:
+        return _tool_err(f"Unknown tool: {tool_name}", "unknown_tool")
+    return spec.handler(args, ctx)
 
 
 def _system_prompt(ctx: ToolContext) -> str:

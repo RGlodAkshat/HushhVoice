@@ -250,14 +250,24 @@ class ChatGateway:
             plan = self._planner.build_plan(text)
             tool_count = len(plan.steps)
             has_write = any(step.action_level == "write" for step in plan.steps)
+            realtime_healthy = bool(payload.get("realtime_healthy", True))
             mode = self._mode_selector.choose(
-                realtime_healthy=True,
+                realtime_healthy=realtime_healthy,
                 tool_count=tool_count,
                 has_write=has_write,
                 ambiguity=False,
                 long_running=False,
             )
             execution_mode = mode.execution_mode
+            if mode.pipeline == "classic_fallback":
+                log_event(
+                    "fallback",
+                    "realtime_unhealthy",
+                    session_id=ctx.session_id,
+                    turn_id=state.turn_id,
+                    request_id=ctx.request_id,
+                    data={"reason": payload.get("fallback_reason") or "unknown"},
+                )
             turn = self._turns.start_turn(
                 user_id=ctx.user_id,
                 thread_id=None,

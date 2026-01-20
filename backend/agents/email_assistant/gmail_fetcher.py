@@ -11,7 +11,7 @@ Designed for: last-20 style inbox QA + reply flows.
 
 from __future__ import annotations
 
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Iterable
 from datetime import datetime, timezone
 import base64
 import logging
@@ -169,6 +169,110 @@ def fetch_recent_emails(
         log.exception("Error fetching emails")
         # Surface a minimal, recoverable failure to caller
         raise RuntimeError(f"Gmail fetch error: {e}") from e
+
+
+def get_profile_history_id(access_token: str) -> Optional[str]:
+    """
+    Fetch the latest Gmail historyId for incremental sync.
+    """
+    service = build_service(access_token)
+    try:
+        profile = service.users().getProfile(userId="me").execute()
+        return profile.get("historyId")
+    except Exception as e:
+        log.exception("Error fetching Gmail profile")
+        return None
+
+
+def fetch_messages_by_ids(
+    access_token: str,
+    message_ids: Iterable[str],
+    include_snippet: bool = True,
+) -> List[Dict[str, str]]:
+    """
+    Fetch metadata for a specific list of Gmail message IDs.
+    """
+    service = build_service(access_token)
+    emails: List[Dict[str, str]] = []
+    for mid in message_ids:
+        if not mid:
+            continue
+        try:
+            msg = service.users().messages().get(
+                userId="me",
+                id=mid,
+                format="metadata",
+                metadataHeaders=["From", "Subject", "Date", "To", "Cc"],
+            ).execute()
+        except Exception:
+            log.exception("Error fetching Gmail message id=%s", mid)
+            continue
+
+        payload = msg.get("payload", {})
+        headers = payload.get("headers", [])
+        internal_date = msg.get("internalDate", "")
+
+        from_raw = _get_header(headers, "From")
+        subject = _get_header(headers, "Subject") or "(No Subject)"
+
+        date_iso, date_hhmm = _fmt_epoch_ms(internal_date)
+        snippet = msg.get("snippet", "") if include_snippet else ""
+
+        emails.append({
+            "id": msg.get("id", ""),
+            "threadId": msg.get("threadId", ""),
+            "from": _trim(from_raw, 300),
+            "from_email": _extract_email(from_raw),
+            "subject": _trim(subject, 300),
+            "date": date_hhmm,
+            "date_iso": date_iso,
+            "snippet": _trim(snippet, 1500) if include_snippet else "",
+        })
+    return emails
+
+
+def fetch_gmail_history(
+    access_token: str,
+    start_history_id: str,
+    max_results: int = 200,
+) -> Tuple[List[str], Optional[str]]:
+    """
+    Fetch Gmail history updates since start_history_id.
+    Returns (message_ids, new_history_id).
+    """
+    service = build_service(access_token)
+    try:
+        resp = service.users().history().list(
+            userId="me",
+            startHistoryId=start_history_id,
+            maxResults=min(max(1, max_results), 500),
+            historyTypes=["messageAdded", "labelAdded", "labelRemoved"],
+        ).execute()
+    except Exception as e:
+        log.exception("Error fetching Gmail history")
+        raise RuntimeError(f"history_error: {e}") from e
+
+    history = resp.get("history", []) or []
+    msg_ids: List[str] = []
+    for item in history:
+        for added in item.get("messagesAdded", []) or []:
+            msg = added.get("message") or {}
+            if msg.get("id"):
+                msg_ids.append(msg["id"])
+        for msg in item.get("messages", []) or []:
+            if msg.get("id"):
+                msg_ids.append(msg["id"])
+
+    # Deduplicate while preserving order
+    seen = set()
+    ordered_ids = []
+    for mid in msg_ids:
+        if mid in seen:
+            continue
+        seen.add(mid)
+        ordered_ids.append(mid)
+
+    return ordered_ids, resp.get("historyId")
 
 
 # =========================

@@ -1,459 +1,219 @@
-# HushhVoice Architecture
+# HushhVoice Architecture (Current)
+
+This document reflects the current codebase in `HushhVoice/` (backend) and `HushhVoice_v2/` (iOS).
 
 ## Scope and sources
-- Backend: `HushhVoice/api/*.py` and `HushhVoice/backend/agents/*`
-- iOS app: `HushhVoice_v2/HushhVoice/HushhVoice/*.swift`
-- Optional web UI: `HushhVoice/frontend/*`
+- Backend: `api/*.py`, `backend/agents/*`
+- iOS: `HushhVoice_v2/HushhVoice/HushhVoice/*.swift`
+- Optional web UI: `frontend/*`
 
-This document captures the current architecture from code and recent updates and defines a target architecture aligned with TOGAF viewpoints and 12-factor principles.
+## System summary
+- Single chat surface in iOS with realtime voice + streaming text.
+- OpenAI Realtime (WebRTC) is the always-on voice shell when healthy.
+- Backend remains the source of truth for tools, safety, confirmation gating, and caching.
+- Gmail/Calendar reads are served from Supabase caches with incremental sync.
+- Fallback path: on-device STT -> `/siri/ask` -> TTS (used only when realtime is unhealthy).
 
-## Business architecture (TOGAF)
-### Stakeholders
-- End users: chat, voice, Gmail/Calendar assistance, onboarding
-- Product and operations: reliability, privacy, consent-first behavior
-- External providers: OpenAI, Google, Supabase, Apple
+## Runtime flows
 
-### Business capabilities
-- Conversational assistant (chat and Siri/Shortcuts)
-- Gmail reading, summarization, and reply drafting/sending
-- Google Calendar Q and A and scheduling
-- Investor onboarding flow (Kai voice + summary review/edit)
-- Kai Notes (per-answer highlights)
-- Long-term memory capture/search (tool router)
-- Profile capture and privacy-first identity enrichment
-- Account deletion and local state reset
+### 1) Realtime voice turn (primary path)
+1. iOS calls `GET /chat/agent/config` for instructions + tools.
+2. iOS calls `POST /chat/agent/token` for an ephemeral OpenAI Realtime token.
+3. iOS opens WebRTC to OpenAI Realtime and sends `session.update`.
+4. User speaks -> input transcript deltas -> UI draft bubble updates live.
+5. Realtime model outputs assistant audio + transcript deltas -> UI streams text in sync.
+6. If tools are needed, iOS forwards tool calls to `/chat/agent/tool`.
+7. Backend executes read-through tools or asks for confirmation on writes.
+8. On confirmation, iOS calls `/chat/agent/confirm`, tool executes, response continues.
 
-### Policies and constraints
-- Consent-first, privacy-first messaging
-- Do not request highly sensitive identifiers in onboarding flow
-- External access tokens are provided by the client per request
+### 2) Tool execution with cache
+- Tool router checks Supabase caches first (`gmail_message_index`, `calendar_event_cache`).
+- If cache is fresh, returns immediately and refreshes asynchronously.
+- If cache is stale, triggers incremental sync using Gmail historyId or Calendar sync token.
 
-## Application architecture (TOGAF)
-### Logical components
-- iOS app (SwiftUI): chat UI + multi-thread history, Siri Shortcuts (AppIntents), TTS playback, Google OAuth PKCE, Apple Sign In to Supabase, investor onboarding voice with OpenAI Realtime (WebRTC), summary editor, local UserDefaults cache and App Group token storage
-- Backend API (Flask): REST endpoints for chat, mail, calendar, onboarding, profile, identity enrichment, TTS, debug console; tool router for /siri/ask (OpenAI tool calling)
-- Memory service: local JSON store + optional Supabase store used by tool router (memory_search/memory_write)
-- Agent modules: Gmail fetcher, reply drafting helper, (placeholder) health assistant
-- Optional web UI: static HTML/CSS/JS client for chat and testing
-- Third-party services: OpenAI (chat, embeddings, TTS, realtime), Google APIs (Gmail/Calendar), Supabase (profile/onboarding/memory), Apple Sign In
+### 3) Fallback STT path (only when realtime is unhealthy)
+- iOS uses Apple Speech to capture user transcript.
+- Text is sent to `/siri/ask` with Google access token if available.
+- Backend runs tool router (Gmail/Calendar/Memory) and returns text.
+- iOS speaks the reply via TTS.
 
-### Core backend routes (current)
-- `GET /health`, `GET /version`
-- `POST /echo`, `POST /echo/stream`
-- `POST /intent/classify`
-- `POST /siri/ask`
-- `POST /mailgpt/answer`, `POST /mailgpt/reply`
-- `POST /calendar/answer`, `POST /calendar/plan`
-- `POST /tts`
-- `GET /profile`, `POST /profile`
-- `POST /account/delete`
-- `GET /onboarding/agent/config`, `POST /onboarding/agent/token`, `POST /onboarding/agent/tool`, `POST /onboarding/agent/sync`, `GET /onboarding/agent/state`, `POST /onboarding/agent/reset`
-- `POST /identity/enrich`
-- `GET /debug`, `GET /debug/ui`, `GET /debug/events`, `POST /debug/clear`
+## Application architecture
 
-### iOS onboarding flow (current)
-- Stages: `loading` → `profile` → `intro1` → `intro2` → `meetKai` → `voice` → `summary` → `actions`
-- On app open, iOS performs a single startup check:
-  - `GET /profile?user_id=...`
-  - `GET /onboarding/agent/config?user_id=...`
-- Routing rules:
-  - Profile incomplete → `profile`
-  - Profile complete + onboarding incomplete → `intro1/intro2` (if not done) or `voice` (resume)
-  - Profile complete + onboarding complete → exit onboarding (main app)
-- User id resolution prefers Supabase Apple user id, then falls back to a local UUID stored as `hushh_kai_user_id`.
-- Voice resume uses `next_question_text` and `missing_keys` from config and preserves local state while reconnecting WebRTC.
-- “Go to HushhTech” routes to Summary if onboarding complete; otherwise routes to profile/intro/voice as needed.
+### iOS app (SwiftUI)
+- `ChatView`: single chat surface, voice-first UI, streaming bubbles.
+- `ChatRealtimeSession`: OpenAI Realtime WebRTC client + tool call forwarding.
+- `AudioCaptureManager`: fallback STT input capture.
+- `SpeechManager`: fallback TTS playback and streaming audio handling.
+- `ChatStore`: local chat history, streaming state, confirmation UI.
 
-### iOS UI highlights (current)
-- Chat: multi-thread sidebar, typing animation, assistant streaming text, copy/TTS/reload actions
-- Auth gate: logo orb with breathing animation, primary Google sign-in, Apple secondary, guest tertiary; trust copy without bank language
-- Intro steps (1–4): premium glass cards, progress dots, logo orb on Steps 2 and 4
-- Voice onboarding: Kai orb + waveform driven by mic level, muted state preserved, notes card capped + scrollable
-- Kai Notes: newest entry animates only once, auto-scroll pinned during animation, notes stored per-answer
-- Summary: hero grid with edit icon, highlight pills, accordion sections with confidence pills, sticky CTA + “Open HushhTech”
+### Backend (Flask)
+- `routes/chat_agent.py`: config/token/tool/confirm/prefetch endpoints for realtime chat.
+- `routes/chat_stream.py`: optional WS gateway for canonical events.
+- `services/chat_realtime_service.py`: tool calling + confirmation gating + idempotency.
+- `services/tool_router_service.py`: Gmail/Calendar/Memory tools with cache reads.
+- `services/cache_sync_service.py`: incremental Gmail/Calendar cache updates.
+- `services/orchestrator_service.py`: plan execution + parallel read-only tools.
+- `services/turn_coordinator.py`: turn lifecycle tracking.
+- `storage/*_store.py`: Supabase persistence (turns, tool_runs, confirmations, caches).
 
-## Data architecture (TOGAF)
-### Data domains
-- User identity: Apple Sign In (Supabase user id) and a local Kai user id fallback (UUID)
-- OAuth tokens: Google access + refresh tokens stored in App Group UserDefaults; web UI stores Google ID token in localStorage
-- Conversation history: stored on device (UserDefaults `chats_v2` with `chat_history_v1` migration) and in web UI localStorage threads
-- Onboarding state: local `KaiLocalState` per user id; backend stores `/tmp` JSON and optional Supabase state via `/onboarding/agent/sync`
-- Profile data: Supabase table storing full_name, phone, email
-- Memory store: local JSON + optional Supabase table storing embedding-backed entries (tool router)
-- Supabase tables: `kai_onboarding_state`, `kai_user_profile`, `hushh_memory_store`
-- Kai Notes: stored locally and optionally sourced from Supabase `notes_tail` via config
-- Email and calendar data: transient, fetched on demand
+## Data architecture
 
-### Data flows and storage
-- iOS app stores Google tokens in App Group UserDefaults for reuse across app and Shortcuts
-- Backend fetches Gmail and Calendar data using short-lived access tokens passed by the client
-- Onboarding state is cached in memory, persisted locally in UserDefaults, and overwritten on app open by Supabase config when available
-- Tool router memory uses local JSON by default and optionally syncs to Supabase (`hushh_memory_store`)
-- Account deletion triggers `/account/delete` to remove Supabase rows and clears local onboarding/profile state on device
-- Chat transcripts remain local-only; backend does not persist chat history by default
+### Supabase tables
+- `kai_user_profile`
+- `kai_onboarding_state`
+- `sessions`
+- `chat_turns`
+- `tool_runs`
+- `confirmation_requests`
+- `memories`
+- `gmail_message_index`
+- `calendar_event_cache`
+- `cache_state`
+- `chat_threads` (optional)
+- `chat_messages` (optional)
+- `oauth_tokens` (optional)
 
-### Local persistence and sync (iOS)
-- `KaiLocalState` (createdAt, discovery, notes, counts, isComplete, lastQuestionId) is encoded to JSON and stored under `hushh_kai_onboarding_state_v1_{user_id}`
-- Sync pending is tracked via `hushh_kai_onboarding_sync_pending_{user_id}`; `hushh_kai_last_prompt` stores the last prompt for reconnect repeats
-- On config fetch, iOS overwrites local discovery, counts, next question, and optionally notes from `notes_tail`
-- Supabase sync is triggered after Summary is shown (or when pending); UI does not block on sync
-- Chat threads are stored in `chats_v2` (legacy `chat_history_v1` is migrated)
+### Cache strategy
+- Gmail index is stored in `gmail_message_index` and refreshed incrementally using Gmail historyId.
+- Calendar events are stored in `calendar_event_cache` and refreshed using sync tokens.
+- `cache_state` stores `gmail_history_id`, `gmail_last_sync_ts`, `calendar_sync_token`, `calendar_last_sync_ts`.
 
-## Technology architecture (TOGAF)
-### Platforms and frameworks
-- Backend: Python, Flask, OpenAI SDK (chat, responses, TTS, embeddings), requests, googleapiclient, Supabase REST
-- iOS: SwiftUI, AppIntents, AVFoundation (AVAudioEngine mic level monitor + waveform), ASWebAuthenticationSession, Supabase SDK, LiveKitWebRTC, Orb
-- Hosting: local run, gunicorn; ngrok for mobile testing
+## Security and trust boundaries
+- OpenAI Realtime token is minted server-side and sent to iOS.
+- Gmail/Calendar access tokens are passed from iOS to backend per request.
+- All write actions require explicit confirmation.
+- Supabase writes use the service role key on the backend.
 
-### Models in use (current)
-- Chat: `gpt-4o`
-- Intent classification: `gpt-4o-mini` (responses + function tool)
-- Realtime voice: `gpt-4o-realtime-preview`
-- Input transcription: `gpt-4o-mini-transcribe`
-- TTS: `gpt-4o-mini-tts`
-- Kai highlight summaries: `gpt-4.1-nano`
-- Memory embeddings: `text-embedding-3-small`
+## Observability
+- `utils/debug_events.py` stores in-memory debug events.
+- `utils/observability.py` logs turn lifecycle and cache events.
 
-### Security and trust boundaries
-- App auth in `/siri/ask` is a placeholder JWT check (TODO in code)
-- Google access tokens are supplied by client per request; optional Google ID token verification is gated by `VERIFY_GOOGLE_TOKEN`
-- OpenAI Realtime uses an ephemeral client_secret generated by backend; SDP is exchanged directly with OpenAI
-- Supabase service role key used server-side for onboarding/profile/memory writes
-- Debug console endpoints are enabled only when `DEBUG_CONSOLE_ENABLED=true` (no auth layer yet)
-
-## C4 architecture diagrams (mermaid)
+## C4 diagrams (mermaid)
 
 ### C1: System context
 ```mermaid
 C4Context
 title HushhVoice System Context
 
-Person(user, "User", "Mobile or web user")
+Person(user, "User", "Voice-first chat user")
 
 System_Boundary(hv, "HushhVoice") {
-  System(ios, "HushhVoice iOS App", "SwiftUI app with chat, Siri, onboarding voice")
-  System(web, "HushhVoice Web UI", "Optional web client")
-  System(api, "HushhVoice API", "Flask backend with REST endpoints")
+  System(ios, "iOS App", "SwiftUI chat + realtime voice")
+  System(api, "Backend API", "Flask tools + cache + confirmations")
+  System(web, "Web UI", "Optional classic chat client")
 }
 
-System_Ext(openai, "OpenAI API", "Chat, TTS, Realtime")
-System_Ext(google, "Google APIs", "Gmail and Calendar")
-System_Ext(supabase, "Supabase", "Auth and data store")
-System_Ext(apple, "Apple Sign In", "Identity provider")
+System_Ext(openai, "OpenAI", "Realtime S2S + text models")
+System_Ext(google, "Google APIs", "Gmail + Calendar")
+System_Ext(supabase, "Supabase", "Profiles, turns, caches")
 
 Rel(user, ios, "Uses")
 Rel(user, web, "Uses")
-Rel(ios, api, "HTTPS JSON endpoints")
-Rel(web, api, "HTTPS JSON endpoints")
-Rel(api, openai, "Chat and TTS")
-Rel(ios, openai, "Realtime WebRTC using ephemeral client_secret")
-Rel(api, google, "Gmail and Calendar APIs")
-Rel(api, supabase, "Profile and onboarding state")
-Rel(ios, supabase, "Apple auth via Supabase SDK")
-Rel(apple, supabase, "OIDC provider")
+Rel(ios, api, "HTTPS JSON (chat_agent, tools, confirmations)")
+Rel(web, api, "HTTPS JSON (legacy endpoints)")
+Rel(ios, openai, "WebRTC Realtime voice")
+Rel(api, openai, "Text models, embeddings")
+Rel(api, google, "Gmail/Calendar APIs")
+Rel(api, supabase, "Read/write data")
 ```
 
 ### C2: Container diagram
 ```mermaid
 C4Container
-title HushhVoice Container Diagram
+title HushhVoice Containers
 
 Person(user, "User")
 
 System_Boundary(hv, "HushhVoice") {
-  Container(ios, "iOS App", "SwiftUI", "Chat UI, Siri intents, onboarding voice, OAuth, TTS playback, local onboarding cache")
-  Container(web, "Web UI", "HTML/JS", "Optional web client for chat/testing")
-  Container(api, "Backend API", "Python Flask", "REST endpoints and orchestration")
-  ContainerDb(state, "Onboarding State", "Supabase or /tmp JSON", "Kai onboarding state")
-  ContainerDb(profile, "Profile Store", "Supabase", "User profile data")
-  ContainerDb(memory, "Memory Store", "Local JSON or Supabase", "Long-term memory entries + embeddings")
-  ContainerDb(local, "Local State", "UserDefaults/App Group", "KaiLocalState, Kai Notes, chats, Google tokens")
+  Container(ios, "iOS App", "SwiftUI", "Chat UI, realtime WebRTC, fallback STT")
+  Container(api, "Backend API", "Flask", "Tool routing, confirmations, caches")
+  Container(worker, "Cache Sync Worker", "Python", "Incremental Gmail/Calendar sync")
+  ContainerDb(store, "Supabase", "Postgres", "Profiles, turns, caches, memory")
+  Container(web, "Web UI", "HTML/JS", "Optional classic chat UI")
 }
 
-System_Ext(openai, "OpenAI", "Chat, TTS, Realtime")
-System_Ext(google, "Google APIs", "Gmail and Calendar")
-System_Ext(apple, "Apple Sign In", "Identity provider")
+System_Ext(openai, "OpenAI", "Realtime S2S + text models")
+System_Ext(google, "Google APIs", "Gmail + Calendar")
 
 Rel(user, ios, "Uses")
 Rel(user, web, "Uses")
-Rel(ios, api, "HTTPS JSON")
-Rel(web, api, "HTTPS JSON")
-Rel(ios, local, "Read/write state")
-Rel(api, state, "Read/write")
-Rel(api, profile, "Read/write")
-Rel(api, memory, "Read/write")
-Rel(api, openai, "Chat/TTS")
-Rel(ios, openai, "Realtime WebRTC")
+Rel(ios, api, "chat_agent endpoints")
+Rel(ios, openai, "WebRTC Realtime")
+Rel(api, openai, "Text + embeddings")
 Rel(api, google, "Gmail/Calendar")
-Rel(ios, apple, "Sign-in")
+Rel(api, store, "Read/write")
+Rel(worker, store, "Update caches")
+Rel(worker, google, "Incremental sync")
+Rel(web, api, "Legacy REST endpoints")
 ```
 
-### C3: Component diagram (backend)
+### C3: Backend components
 ```mermaid
 C4Component
-title HushhVoice API Components (Flask)
+title HushhVoice Backend Components
 
-Container_Boundary(api, "HushhVoice API") {
-  Component(routes_meta, "routes/meta.py", "Flask routes", "/health, /version")
-  Component(routes_echo, "routes/echo.py", "Flask routes", "/echo, /echo/stream")
-  Component(routes_intent, "routes/intent.py", "Flask routes", "/intent/classify")
-  Component(routes_siri, "routes/siri.py", "Flask routes", "/siri/ask")
-  Component(routes_mail, "routes/mail.py", "Flask routes", "/mailgpt/*")
-  Component(routes_calendar, "routes/calendar.py", "Flask routes", "/calendar/*")
-  Component(routes_tts, "routes/tts.py", "Flask routes", "/tts")
-  Component(routes_onboarding, "routes/onboarding.py", "Flask routes", "/onboarding/agent/*")
-  Component(routes_profile, "routes/profile.py", "Flask routes", "/profile")
-  Component(routes_account, "routes/account.py", "Flask routes", "/account/delete")
-  Component(routes_identity, "routes/identity_enrich.py", "Flask routes", "/identity/enrich")
-  Component(routes_debug, "routes/debug.py", "Flask routes", "/debug/*")
+Container_Boundary(api, "Backend API") {
+  Component(routes_chat_agent, "routes/chat_agent.py", "Flask", "Realtime config/token/tools/prefetch")
+  Component(routes_chat_stream, "routes/chat_stream.py", "Flask", "WS gateway (canonical stream)")
+  Component(routes_siri, "routes/siri.py", "Flask", "Fallback STT pipeline")
 
-  Component(auth_helpers, "utils/auth_helpers.py", "Helper", "Token extraction/verification")
-  Component(json_helpers, "utils/json_helpers.py", "Helper", "Response envelopes")
-  Component(debug_events, "utils/debug_events.py", "Helper", "In-memory debug events")
-  Component(openai_client, "clients/openai_client.py", "Client", "Chat/TTS wrapper")
-  Component(google_client, "clients/google_client.py", "Client", "Calendar REST calls")
+  Component(chat_realtime, "services/chat_realtime_service.py", "Service", "Tool routing + confirmation gating")
+  Component(tool_router, "services/tool_router_service.py", "Service", "Gmail/Calendar/Memory tools")
+  Component(cache_sync, "services/cache_sync_service.py", "Service", "Incremental cache refresh")
+  Component(turns, "services/turn_coordinator.py", "Service", "Turn lifecycle + idempotency")
 
-  Component(onboarding_service, "services/onboarding_service.py", "Service", "Onboarding orchestration")
-  Component(profile_service, "services/profile_service.py", "Service", "Profile CRUD")
-  Component(account_service, "services/account_service.py", "Service", "Account delete")
-  Component(mail_service, "services/mail_service.py", "Service", "Mail QA + draft")
-  Component(calendar_service, "services/calendar_service.py", "Service", "Calendar QA + plan")
-  Component(intent_service, "services/intent_service.py", "Service", "Intent classification")
-  Component(tool_router_service, "services/tool_router_service.py", "Service", "Siri tool router")
-  Component(memory_service, "services/memory_service.py", "Service", "Embedding memory search/write")
-  Component(tts_service, "services/tts_service.py", "Service", "TTS orchestration")
-
-  Component(onboarding_state, "storage/onboarding_state_store.py", "Storage", "Cache + Supabase + disk")
-  Component(memory_store, "storage/memory_store.py", "Storage", "Local JSON + Supabase memory")
-  Component(profile_store, "storage/profile_store.py", "Storage", "Profile persistence")
-  Component(supabase_store, "storage/supabase_store.py", "Storage", "Supabase REST helpers")
-
-  Component(gmail_fetcher, "gmail_fetcher", "Agent module", "Gmail fetch/send")
-  Component(reply_helper, "reply_helper", "Agent module", "Draft reply with OpenAI")
+  Component(gmail_cache, "storage/gmail_cache_store.py", "Storage", "Gmail cache table")
+  Component(cal_cache, "storage/calendar_cache_store.py", "Storage", "Calendar cache table")
+  Component(cache_state, "storage/cache_state_store.py", "Storage", "Sync tokens + timestamps")
+  Component(turn_store, "storage/turn_store.py", "Storage", "Turn table")
+  Component(tool_run_store, "storage/tool_run_store.py", "Storage", "Tool run table")
+  Component(confirm_store, "storage/confirmation_store.py", "Storage", "Confirmation table")
 }
 
-Container_Ext(openai, "OpenAI API", "Chat, TTS, Realtime")
-Container_Ext(google, "Google APIs", "Gmail and Calendar")
-ContainerDb(supabase, "Supabase", "Profile + onboarding + memory state")
+ContainerDb(supabase, "Supabase", "Postgres", "Profiles, turns, caches, memory")
+System_Ext(openai, "OpenAI", "Realtime + text")
+System_Ext(google, "Google APIs", "Gmail + Calendar")
 
-Rel(routes_siri, tool_router_service, "Tool-routed assistant")
-Rel(routes_intent, intent_service, "Intent classification")
-Rel(routes_debug, debug_events, "List/clear events")
-Rel(tool_router_service, openai_client, "Chat completions + tools")
-Rel(tool_router_service, gmail_fetcher, "Gmail search/send")
-Rel(tool_router_service, google_client, "Calendar REST")
-Rel(tool_router_service, memory_service, "Memory search/write")
-Rel(memory_service, memory_store, "Load/save entries")
-Rel(memory_store, supabase_store, "Supabase REST")
-Rel(routes_mail, mail_service, "Mail QA")
-Rel(mail_service, gmail_fetcher, "Fetch/send Gmail")
-Rel(mail_service, reply_helper, "Draft replies")
-Rel(routes_calendar, calendar_service, "Calendar QA/plan")
-Rel(calendar_service, google_client, "Calendar REST")
-Rel(routes_onboarding, onboarding_service, "Onboarding flow")
-Rel(onboarding_service, onboarding_state, "Load/save state")
-Rel(onboarding_service, supabase_store, "Supabase state")
-Rel(routes_profile, profile_service, "Profile CRUD")
-Rel(profile_service, profile_store, "Profile persistence")
-Rel(routes_account, account_service, "Account delete")
-Rel(account_service, onboarding_state, "Clear onboarding state")
-Rel(account_service, profile_store, "Clear profile")
-Rel(account_service, supabase_store, "Supabase delete")
-
-Rel(tts_service, openai_client, "TTS")
-Rel(openai_client, openai, "Chat/TTS")
-Rel(google_client, google, "Calendar")
-Rel(gmail_fetcher, google, "Gmail")
-Rel(onboarding_state, supabase, "State store")
-Rel(memory_store, supabase, "Memory store")
-Rel(routes_profile, supabase, "Profile store")
-Rel(routes_identity, openai, "Inference")
+Rel(routes_chat_agent, chat_realtime, "calls")
+Rel(chat_realtime, tool_router, "executes tools")
+Rel(tool_router, gmail_cache, "read/write")
+Rel(tool_router, cal_cache, "read/write")
+Rel(cache_sync, cache_state, "update")
+Rel(cache_sync, gmail_cache, "refresh")
+Rel(cache_sync, cal_cache, "refresh")
+Rel(turns, turn_store, "persist")
+Rel(tool_router, tool_run_store, "persist")
+Rel(chat_realtime, confirm_store, "persist")
+Rel(tool_router, google, "API calls")
+Rel(chat_realtime, openai, "model tools")
+Rel(gmail_cache, supabase, "store")
+Rel(cal_cache, supabase, "store")
+Rel(cache_state, supabase, "store")
+Rel(turn_store, supabase, "store")
+Rel(tool_run_store, supabase, "store")
+Rel(confirm_store, supabase, "store")
 ```
 
-## C4 dynamic workflows (mermaid)
-
-### Siri ask flow
+### Sequence: realtime tool call with confirmation
 ```mermaid
 sequenceDiagram
-participant User
-participant iOS as iOS App
-participant API as HushhVoice API
-participant OpenAI as OpenAI API
-participant Google as Google APIs
-participant Memory as Memory Store
+  participant User
+  participant iOS
+  participant Realtime
+  participant Backend
+  participant Google
 
-User->>iOS: Speak or type question
-iOS->>API: POST /siri/ask (prompt, app_jwt, google_access_token)
-API->>OpenAI: chat.completions (tools enabled)
-alt Tool calls (gmail_search/send, calendar_list/create, memory_search/write, profile_get)
-  OpenAI-->>API: Tool call(s)
-  API->>Google: Gmail/Calendar APIs (if needed)
-  Google-->>API: Results
-  API->>Memory: Read/write memory entries (local JSON or Supabase)
-  Memory-->>API: Results
-  API-->>OpenAI: Tool outputs
-end
-OpenAI-->>API: Final response
-API-->>iOS: JSON {speech, display}
+  User->>iOS: Speak request
+  iOS->>Realtime: WebRTC audio
+  Realtime-->>iOS: input_transcript.delta
+  Realtime-->>iOS: tool_call (gmail_send)
+  iOS->>Backend: POST /chat/agent/tool
+  Backend-->>iOS: confirmation.request
+  iOS->>User: Show confirmation card
+  User->>iOS: Confirm
+  iOS->>Backend: POST /chat/agent/confirm
+  Backend->>Google: Gmail API
+  Google-->>Backend: Result
+  Backend-->>iOS: tool output
+  Realtime-->>iOS: assistant audio + text
 ```
-
-### Onboarding voice flow (Kai)
-```mermaid
-sequenceDiagram
-participant User
-participant iOS as iOS App
-participant API as HushhVoice API
-participant OpenAI as OpenAI Realtime
-participant Supabase
-
-iOS->>API: GET /profile
-API->>Supabase: Load profile
-API-->>iOS: profile (exists + fields)
-
-iOS->>API: GET /onboarding/agent/config
-API->>Supabase: Load state (if configured)
-API-->>iOS: instructions, tools, kickoff, state_compact, missing_keys, next_question_text
-
-iOS->>API: POST /onboarding/agent/token
-API->>OpenAI: Create realtime session
-API-->>iOS: client_secret
-
-iOS->>OpenAI: WebRTC connect (audio + data channel)
-OpenAI-->>iOS: Tool call (memory_set)
-iOS->>API: POST /onboarding/agent/tool
-API->>Supabase: Save state (or /tmp fallback)
-API-->>iOS: tool output
-iOS->>OpenAI: function_call_output
-```
-
-Notes:
-- iOS updates local discovery, next_question_text, completed counts, and notes from tool output.
-- Supabase sync is deferred until summary is shown.
-
-### Mail and calendar (web or app)
-```mermaid
-sequenceDiagram
-participant Client
-participant API as HushhVoice API
-participant OpenAI as OpenAI API
-participant Gmail as Gmail API
-participant Cal as Calendar API
-
-Client->>API: POST /mailgpt/answer or /calendar/plan
-alt Mail
-  API->>Gmail: Fetch inbox
-  Gmail-->>API: Email metadata
-  API->>OpenAI: Summarize or draft
-  OpenAI-->>API: Answer or draft
-else Calendar
-  API->>Cal: List or insert events
-  Cal-->>API: Events or created event
-  API->>OpenAI: Summarize or parse
-  OpenAI-->>API: Answer or event JSON
-end
-API-->>Client: JSON response
-```
-
-### TTS flow
-```mermaid
-sequenceDiagram
-participant iOS as iOS App
-participant API as HushhVoice API
-participant OpenAI as OpenAI API
-
-iOS->>API: POST /tts
-API->>OpenAI: audio.speech.create
-OpenAI-->>API: Audio bytes (mp3)
-API-->>iOS: audio/mpeg
-```
-
-## 12-factor alignment (current vs target)
-| Factor | Current state | Target state |
-| --- | --- | --- |
-| 1. Codebase | Single repo with backend and iOS | Keep mono-repo or split with clear ownership |
-| 2. Dependencies | `requirements.txt` and Swift packages | Pin versions and use lockfiles where possible |
-| 3. Config | `.env` plus environment variables | Move secrets out of code, use secret manager |
-| 4. Backing services | OpenAI, Google, Supabase are attached | Keep them replaceable via config |
-| 5. Build/release/run | Manual local run, gunicorn | CI/CD with build and release stages |
-| 6. Processes | Some state in memory and `/tmp` | Make services stateless; persist in DB/Redis |
-| 7. Port binding | `PORT` env supported | Keep |
-| 8. Concurrency | Scale via gunicorn or serverless | Document process model and autoscale |
-| 9. Disposability | No explicit shutdown handling | Add timeouts and graceful shutdown hooks |
-| 10. Dev/prod parity | ngrok for dev | Use staging with same services |
-| 11. Logs | Python logging to stdout | Structured logs + centralized aggregation |
-| 12. Admin processes | None defined | Add one-off jobs (migrations, backfills) |
-
-## Target architecture (ideal)
-### Target principles
-- Consent-first and privacy-first by default
-- Zero trust between client and backend
-- Stateless API services with durable data stores
-- Event-driven for long-running tasks
-- Observability as a first-class concern
-
-### Target container view (proposed)
-```mermaid
-flowchart LR
-subgraph Clients
-  iOS[iOS App]
-  Web[Web UI]
-  Siri[Siri Shortcuts]
-end
-
-subgraph Edge
-  Gateway[API Gateway]
-  Auth[Auth and Consent]
-end
-
-subgraph Core
-  Orchestrator[LLM Orchestrator]
-  MailSvc[Mail Service]
-  CalendarSvc[Calendar Service]
-  OnboardingSvc[Onboarding Service]
-  ProfileSvc[Profile Service]
-  TtsSvc[TTS Service]
-  Worker[Async Worker]
-  Cache[Redis Cache]
-  DB[(Postgres or Supabase)]
-  Vector[(Vector Store)]
-  Obj[(Object Storage)]
-end
-
-OpenAI[OpenAI API]
-Google[Google APIs]
-Apple[Apple Sign In]
-Obs[Logs, metrics, traces]
-
-iOS --> Gateway
-Web --> Gateway
-Siri --> Gateway
-Gateway --> Auth
-Auth --> Orchestrator
-Orchestrator --> OpenAI
-MailSvc --> Google
-CalendarSvc --> Google
-OnboardingSvc --> OpenAI
-OnboardingSvc --> DB
-ProfileSvc --> DB
-Orchestrator --> Cache
-Worker --> DB
-Worker --> Obj
-Gateway --> Obs
-```
-
-### Key changes from baseline
-- Implement real app auth (JWT validation, session management, rate limiting)
-- Move all onboarding and profile state to a durable database and add caching
-- Add a token broker or vault for Google access and refresh tokens server-side
-- Separate long-running AI tasks into background workers
-- Add central observability, audit logs, and consent tracking
-- Provide a stable environment separation for dev/staging/prod
-
-## Gaps and risks observed in code
-- App auth in `/siri/ask` is a placeholder and should be enforced
-- Onboarding state falls back to `/tmp` storage if Supabase is not configured
-- Memory store falls back to local JSON; durability and encryption depend on deployment
-- Health assistant code is present but not wired into the API
-- Onboarding resume depends on Supabase config availability; when offline, local cache is used and may drift from server state
-- Realtime voice relies on short-lived client_secret tokens; token refresh failure results in reconnect and potential user interruption
-- Debug console endpoints are unauthenticated when enabled

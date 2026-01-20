@@ -1,7 +1,8 @@
 # HushhVoice Frontend
 
 This folder contains a static HTML/CSS/JS web client that talks to the Flask backend in `api/`.
-Note: the new chat streaming WebSocket (`/chat/stream`) is currently used by the iOS app, not this web UI.
+
+The web UI still uses the classic REST endpoints (`/echo`, `/mailgpt/*`, `/calendar/*`) and does not yet use the new realtime chat agent (`/chat/agent/*`). The iOS app is the primary realtime client.
 
 ## Files
 
@@ -56,17 +57,10 @@ If you are using ngrok:
 CONFIG.BASE_URL = "https://xxxx.ngrok-free.app";
 ```
 
-If you deploy the frontend + backend together (e.g., Vercel with `/api/*` routing),
-set:
+If you deploy the frontend + backend together (e.g., Vercel with `/api/*` routing), set:
 
 ```
 CONFIG.BASE_URL = "/api";
-```
-
-Make sure the backend is running first:
-
-```bash
-python api/index.py
 ```
 
 ## Google OAuth Client ID
@@ -84,4 +78,4 @@ If you change this, make sure the ID is also authorized in your Google Cloud Con
 - If the UI says the server hostname could not be found, verify `CONFIG.BASE_URL` matches your backend or ngrok URL exactly.
 - If Google sign-in fails, confirm the client ID and JavaScript origin are correct.
 
-If you want a build step or a Vite-based setup later, I can add that.
+If you want a build step or a Vite-based setup later, we can add that.

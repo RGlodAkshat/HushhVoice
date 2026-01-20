@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from services.chat_tool_router import run_read_only_tool
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from storage.confirmation_store import create_confirmation
 from storage.tool_run_store import update_tool_run
 from utils.observability import log_event
@@ -128,7 +129,38 @@ class Executor:
     ) -> Dict[str, Any]:
         results: List[Dict[str, Any]] = []
 
-        for step in steps:
+        read_steps = [
+            step for step in steps
+            if step.action_level == "read" and not step.requires_confirmation
+        ]
+        if read_steps:
+            with ThreadPoolExecutor(max_workers=min(4, len(read_steps))) as pool:
+                future_map = {
+                    pool.submit(
+                        run_read_only_tool,
+                        tool_name=step.tool_name,
+                        args=step.args,
+                        ctx=tool_ctx,
+                        turn_id=turn_id,
+                        step_index=step.step_index,
+                    ): step for step in read_steps
+                }
+                results_by_step: Dict[int, Dict[str, Any]] = {}
+                for future in as_completed(future_map):
+                    step = future_map[future]
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        result = {"ok": False, "error": {"code": "tool_error", "message": str(exc)}}
+                    results_by_step[step.step_index] = result
+                for step in sorted(read_steps, key=lambda s: s.step_index):
+                    tool_result = results_by_step.get(step.step_index, {"ok": False})
+                    results.append(tool_result)
+                    if tool_result.get("tool_run_id"):
+                        update_tool_run(tool_result["tool_run_id"], {"status": "completed", "finished_at": _now_iso()})
+
+        remaining_steps = [step for step in steps if step not in read_steps]
+        for step in remaining_steps:
             if step.requires_confirmation:
                 confirmation_id = self.confirmation_gate.request_confirmation(
                     turn_id=turn_id,

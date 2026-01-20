@@ -91,6 +91,31 @@ def _supabase_table_url() -> str:
 def load_memory_from_supabase(user_id: str) -> Optional[List[Dict[str, Any]]]:
     if not _supabase_enabled():
         return None
+    if SUPABASE_MEMORY_TABLE == "memories":
+        url = f"{_supabase_table_url()}?user_id=eq.{quote(user_id, safe='')}&select=memory_id,content,source,created_at,updated_at"
+        try:
+            resp = supabase_get(url, headers=supabase_headers(), timeout=SUPABASE_TIMEOUT_SECS)
+            if resp.status_code >= 400:
+                log.warning("Supabase memories load failed: %s", resp.text)
+                return None
+            rows = resp.json() or []
+            if not rows:
+                return None
+            entries: List[Dict[str, Any]] = []
+            for row in rows:
+                entries.append({
+                    "id": row.get("memory_id"),
+                    "content": row.get("content") or "",
+                    "tags": [],
+                    "source": row.get("source") or "memory",
+                    "created_at": row.get("created_at"),
+                    "updated_at": row.get("updated_at"),
+                    "embedding": None,
+                })
+            return entries
+        except Exception:
+            log.exception("Failed to load memories from Supabase")
+            return None
     url = f"{_supabase_table_url()}?user_id=eq.{quote(user_id, safe='')}&select={SUPABASE_MEMORY_COLUMN}"
     try:
         resp = supabase_get(url, headers=supabase_headers(), timeout=SUPABASE_TIMEOUT_SECS)
@@ -110,6 +135,9 @@ def load_memory_from_supabase(user_id: str) -> Optional[List[Dict[str, Any]]]:
 def save_memory_to_supabase(user_id: str, entries: List[Dict[str, Any]]) -> bool:
     if not _supabase_enabled():
         return False
+    if SUPABASE_MEMORY_TABLE == "memories":
+        # Row-per-memory is handled by memory_store_v2.create_memory.
+        return True
     url = _supabase_table_url()
     headers = supabase_headers()
     headers["Prefer"] = "resolution=merge-duplicates,return=minimal"
