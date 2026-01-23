@@ -39,7 +39,7 @@ def get_chat_config(user_id: str) -> Dict[str, Any]:
         f"UserName: {user_name or 'unknown'}. UserEmail: {user_email or 'unknown'}."
     )
 
-    return {
+    cfg = {
         "agent": {"name": "HushhVoice"},
         "user_id": user_id,
         "realtime": {
@@ -56,6 +56,12 @@ def get_chat_config(user_id: str) -> Dict[str, Any]:
         "tools": build_realtime_tools_schema(),
         "instructions": instructions,
     }
+    try:
+        td = cfg["realtime"]["turn_detection"]
+        log.info("[VOICE_DBG][BackendConfig] threshold=%s type=%s", td.get("threshold"), type(td.get("threshold")))
+    except Exception:
+        log.exception("[VOICE_DBG][BackendConfig] threshold_log_failed")
+    return cfg
 
 
 def create_chat_realtime_token(model: Optional[str], ttl_seconds: Optional[int]) -> Dict[str, Any]:
