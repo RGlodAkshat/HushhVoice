@@ -18,10 +18,8 @@ if BACKEND_DIR not in sys.path:
 # =========================
 # Config & Initialization
 # =========================
-# Load root .env first, then backend/.env if present, then any CWD .env.
+# Single source of truth for local secrets/config.
 load_dotenv(os.path.join(ROOT_DIR, ".env"))
-load_dotenv(os.path.join(BACKEND_DIR, ".env"))
-load_dotenv()
 
 APP_NAME = os.getenv("APP_NAME", "HushhVoice API")
 APP_VERSION = os.getenv("APP_VERSION", "0.5.0")

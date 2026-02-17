@@ -14,7 +14,9 @@ from typing import List, Dict, Optional
 from dotenv import load_dotenv
 from openai import OpenAI
 
-load_dotenv()
+THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.abspath(os.path.join(THIS_DIR, "..", "..", ".."))
+load_dotenv(os.path.join(ROOT_DIR, ".env"))
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
